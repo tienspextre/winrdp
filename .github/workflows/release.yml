@@ -1,0 +1,111 @@
+name: Release Ubuntu 24.04 .deb
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ubuntu-24-04:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ubuntu 24.04 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git ccache \
+            libgtk-4-dev libadwaita-1-dev libsecret-1-dev libepoxy-dev libgl-dev \
+            libssl-dev libx11-dev libxext-dev libxinerama-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxrandr-dev libxkbfile-dev libxdamage-dev \
+            libxv-dev libxrender-dev libwayland-dev libxkbcommon-dev \
+            libasound2-dev libpulse-dev libcups2-dev libfuse3-dev libusb-1.0-0-dev \
+            libkrb5-dev libicu-dev libcjson-dev libjson-c-dev libjpeg-turbo8-dev \
+            libcairo2-dev libopus-dev liburiparser-dev libpkcs11-helper1-dev \
+            libpcsclite-dev libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev libva-dev libdrm-dev \
+            desktop-file-utils dpkg-dev
+
+      - name: Restore cached FreeRDP 3.33.1
+        id: cache-freerdp3
+        uses: actions/cache@v4
+        with:
+          path: third_party/freerdp3-install
+          key: freerdp3-3.33.1-ubuntu-24.04-${{ hashFiles('scripts/build-freerdp3.sh') }}
+
+      - name: Build bundled FreeRDP 3.33.1 (H.264 + VA-API)
+        run: |
+          if [ ! -f third_party/freerdp3-install/lib/pkgconfig/freerdp3.pc ]; then
+            ./scripts/build-freerdp3.sh
+          fi
+
+      - name: Build WinRDP and run unit tests
+        run: ./scripts/build-app.sh
+
+      - name: Build .deb package
+        run: |
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            PKG_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PKG_VERSION="$(sed -nE 's/^[[:space:]]*project\(winrdp[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/p' CMakeLists.txt | head -n 1)"
+          fi
+          ./scripts/build-deb.sh --version "$PKG_VERSION"
+
+      - name: Verify .deb metadata, linkage, and extracted binary
+        run: |
+          DEB_FILE="$(ls -1 dist/*.deb | head -n 1)"
+          dpkg-deb --info "$DEB_FILE"
+          dpkg-deb --contents "$DEB_FILE"
+
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          dpkg-deb -x "$DEB_FILE" "$TMP_DIR"
+
+          if ldd "$TMP_DIR/usr/bin/winrdp" | grep -q 'not found'; then
+            echo "ERROR: Missing shared library in extracted binary" >&2
+            ldd "$TMP_DIR/usr/bin/winrdp"
+            exit 1
+          fi
+          for libname in libfreerdp3.so.3 libfreerdp-client3.so.3 libwinpr3.so.3; do
+            resolved="$(ldd "$TMP_DIR/usr/bin/winrdp" | awk -v l="$libname" '$1 == l {print $3}')"
+            if [[ "$resolved" != "$TMP_DIR/usr/lib/winrdp/lib/"* ]]; then
+              echo "ERROR: $libname did not resolve to bundled dir: $resolved" >&2
+              exit 1
+            fi
+          done
+
+          desktop-file-validate "$TMP_DIR/usr/share/applications/io.winrdp.Client.desktop"
+          VER_OUT="$(cd /tmp && "$TMP_DIR/usr/bin/winrdp" --version)"
+          echo "$VER_OUT"
+          if [[ "$VER_OUT" != *"H264/HWAccel=ON"* ]]; then
+            echo "ERROR: Expected H264/HWAccel=ON in --version output" >&2
+            exit 1
+          fi
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: winrdp-ubuntu-24.04-deb
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS.txt \
+              --title "WinRDP $GITHUB_REF_NAME (Ubuntu 24.04 amd64)" \
+              --generate-notes
+          fi

@@ -16,6 +16,15 @@
 - **Đầy đủ tính năng:**
   - Hardware H.264/AVC444 qua Intel `iHD` VA-API, Dynamic Resolution (`MS-RDPEDISP` debounce 250ms), Con trỏ phần cứng RGBA, Clipboard 2 chiều (chữ, HTML, ảnh, file qua FUSE3), Âm thanh/Mic, Chia sẻ thư mục (`\\tsclient`), Đa màn hình (`_NET_WM_FULLSCREEN_MONITORS`), Tự kết nối lại không làm văng fullscreen, Lưu mật khẩu an toàn bằng GNOME Keyring (`libsecret`), Hỗ trợ đọc/xuất file `.rdp` (kể cả UTF-16LE từ Windows).
 
+## Cài đặt nhanh trên Ubuntu 24.04 (`amd64`)
+
+Tải file `.deb` mới nhất tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (đã đóng gói sẵn **FreeRDP 3.33.1** bật **H.264/AVC444 + VA-API** trong `/usr/lib/winrdp/lib/`, không xung đột với thư viện hệ thống) rồi cài bằng `apt`:
+
+```bash
+sudo apt update
+sudo apt install ./winrdp_1.0.0_amd64.deb
+```
+
 ## Phím tắt mặc định trong phiên RDP
 
 | Phím tắt | Chức năng |
@@ -24,13 +33,14 @@
 | `Right Ctrl` (bấm nhả đơn) | Thả / bắt lại bàn phím giữa Ubuntu và Windows |
 | `Ctrl + Alt + Enter` | Chuyển nhanh Fullscreen / Windowed |
 
-## Build & Cài đặt lại
+## Build từ mã nguồn & Đóng gói `.deb`
 
 ```bash
 ./scripts/install-deps.sh      # Chỉ cần chạy 1 lần
 ./scripts/build-freerdp3.sh    # Build FreeRDP 3.33.1 (H.264 + VA-API + Pulse + FUSE3)
 ./scripts/build-app.sh         # Biên dịch WinRDP & chạy CTest unit tests
-./scripts/install-desktop.sh   # Cài đặt vào ~/.local/bin & menu ứng dụng Ubuntu
+./scripts/install-desktop.sh   # Cài đặt nhanh vào ~/.local/bin & menu ứng dụng Ubuntu
+./scripts/build-deb.sh         # Đóng gói file .deb vào dist/winrdp_<ver>_amd64.deb
 ```
 
 ## Sử dụng qua dòng lệnh

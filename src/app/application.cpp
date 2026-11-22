@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace fs = std::filesystem;
@@ -18,6 +19,10 @@ namespace fs = std::filesystem;
 namespace winrdp {
 
 namespace {
+
+#ifndef WINRDP_VERSION
+#define WINRDP_VERSION "1.0.0"
+#endif
 
 constexpr const char* kFallbackCss = R"CSS(
 .winrdp-conn-bar {
@@ -46,22 +51,46 @@ std::string executable_dir() {
     return {};
 }
 
+bool has_intel_gpu() {
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator("/sys/class/drm", ec)) {
+        if (ec) break;
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("renderD", 0) != 0 && name.rfind("card", 0) != 0) {
+            continue;
+        }
+        std::ifstream vendor_file(entry.path() / "device" / "vendor");
+        std::string vendor;
+        if (vendor_file >> vendor && vendor == "0x8086") {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string resolve_css_path() {
     const std::string exe_dir = executable_dir();
-    std::vector<fs::path> candidates = {
-        fs::current_path() / "data" / "style.css",
-    };
+    std::error_code ec;
+    std::vector<fs::path> candidates;
+    const fs::path cwd = fs::current_path(ec);
+    if (!ec) {
+        candidates.push_back(cwd / "data" / "style.css");
+    }
     if (!exe_dir.empty()) {
-        candidates.push_back(fs::path(exe_dir) / "data" / "style.css");
-        candidates.push_back(fs::path(exe_dir).parent_path() / "data" / "style.css");
+        const fs::path exe_path(exe_dir);
+        candidates.push_back(exe_path / "data" / "style.css");
+        candidates.push_back(exe_path.parent_path() / "data" / "style.css");
+        candidates.push_back(exe_path.parent_path() / "share" / "winrdp" / "style.css");
     }
     if (const char* xdg_data = std::getenv("XDG_DATA_HOME")) {
         candidates.push_back(fs::path(xdg_data) / "winrdp" / "style.css");
     } else if (const char* home = std::getenv("HOME")) {
         candidates.push_back(fs::path(home) / ".local" / "share" / "winrdp" / "style.css");
     }
+    candidates.push_back(fs::path("/usr/share/winrdp/style.css"));
+    candidates.push_back(fs::path("/usr/local/share/winrdp/style.css"));
     for (const auto& c : candidates) {
-        if (fs::exists(c)) return c.string();
+        if (fs::exists(c, ec) && !ec) return c.string();
     }
     return {};
 }
@@ -239,7 +268,10 @@ int Application::run_smoke_test() {
                        sess_win->canvas().dirty_upload_count() >= 1;
     const bool mgr_ok = gtk_widget_get_realized(GTK_WIDGET(manager_->gtk_window())) == TRUE;
 
+    const std::string css_path = resolve_css_path();
+
     std::cout << "=== WinRDP Smoke Test Report ===\n";
+    std::cout << "CSS path: " << (css_path.empty() ? "(fallback)" : css_path) << "\n";
     std::cout << "FreeRDP version: " << RdpSession::freerdp_version_string() << "\n";
     std::cout << "H.264/FFmpeg GFX support: " << (RdpSession::has_h264_hwaccel_support() ? "YES" : "NO") << "\n";
     std::cout << "LIBVA_DRIVER_NAME: " << (std::getenv("LIBVA_DRIVER_NAME") ? std::getenv("LIBVA_DRIVER_NAME") : "(unset)") << "\n";
@@ -267,16 +299,18 @@ int Application::run_smoke_test() {
 }
 
 int Application::run(int argc, char** argv) {
-    // Enable Intel iHD VA-API hardware decode by default when available
+    // Enable Intel iHD VA-API hardware decode by default when available on Intel GPUs
+    std::error_code ec;
     if (!std::getenv("LIBVA_DRIVER_NAME") &&
-        fs::exists("/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so")) {
+        has_intel_gpu() &&
+        fs::exists("/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so", ec)) {
         setenv("LIBVA_DRIVER_NAME", "iHD", 0);
     }
 
     cli_ = parse_cli(argc, argv);
 
     if (cli_.show_version) {
-        std::cout << "WinRDP 1.0.0 (FreeRDP " << RdpSession::freerdp_version_string()
+        std::cout << "WinRDP " << WINRDP_VERSION << " (FreeRDP " << RdpSession::freerdp_version_string()
                   << ", H264/HWAccel=" << (RdpSession::has_h264_hwaccel_support() ? "ON" : "OFF")
                   << ")\n";
         return 0;

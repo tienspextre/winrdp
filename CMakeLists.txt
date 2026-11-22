@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(winrdp VERSION 1.0.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -75,6 +77,8 @@ target_include_directories(winrdp
         ${FREERDP3_INCLUDE_DIRS}
 )
 
+target_compile_definitions(winrdp PRIVATE WINRDP_VERSION="${PROJECT_VERSION}")
+
 target_compile_options(winrdp
     PRIVATE -Wall -Wextra -Wno-unused-parameter
 )
@@ -92,11 +96,16 @@ target_link_libraries(winrdp
 
 set_target_properties(winrdp PROPERTIES
     BUILD_RPATH "${FREERDP3_LIB_DIR}"
-    INSTALL_RPATH "$ORIGIN/../third_party/freerdp3-install/lib;${FREERDP3_LIB_DIR}"
+    INSTALL_RPATH "$ORIGIN/../lib/winrdp/lib"
     BUILD_WITH_INSTALL_RPATH FALSE
 )
 
 target_link_options(winrdp PRIVATE "-Wl,--disable-new-dtags")
+
+install(TARGETS winrdp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES data/style.css DESTINATION ${CMAKE_INSTALL_DATADIR}/winrdp)
+install(FILES data/io.winrdp.Client.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES data/winrdp-mime.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
 
 enable_testing()
 
