@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <utility>
 
 namespace winrdp {
 
@@ -19,22 +20,56 @@ uint64_t steady_ms_now() {
             .count());
 }
 
+void sync_css_flag(GtkWidget* widget, const char* css_class, bool active) {
+    if (!widget) return;
+    if (active) {
+        gtk_widget_add_css_class(widget, css_class);
+    } else {
+        gtk_widget_remove_css_class(widget, css_class);
+    }
+}
+
+std::pair<int, int> primary_logical_bounds(GdkDisplay* display) {
+    int mon_w = 1920;
+    int mon_h = 1080;
+    const auto mons = query_local_monitors(display);
+    if (!mons.empty()) {
+        MonitorInfo primary = mons[0];
+        for (const auto& m : mons) {
+            if (m.is_primary) {
+                primary = m;
+                break;
+            }
+        }
+        if (primary.logical_width > 0 && primary.logical_height > 0) {
+            mon_w = primary.logical_width;
+            mon_h = primary.logical_height;
+        } else if (primary.width > 0 && primary.height > 0) {
+            mon_w = primary.width;
+            mon_h = primary.height;
+        }
+    }
+    return {mon_w, mon_h};
+}
+
 } // namespace
 
 SessionWindow::SessionWindow(GtkApplication* app,
                              ConnectionProfile profile,
                              SessionWindowCallbacks callbacks,
-                             bool smoke_test_mode)
+                             bool smoke_test_mode,
+                             uint64_t session_id)
     : app_(app),
       profile_(std::move(profile)),
       callbacks_(std::move(callbacks)),
-      smoke_test_mode_(smoke_test_mode) {
+      smoke_test_mode_(smoke_test_mode),
+      session_id_(session_id) {
     window_ = ADW_APPLICATION_WINDOW(adw_application_window_new(app));
     gtk_window_set_title(GTK_WINDOW(window_), ("WinRDP — " + profile_.display_title()).c_str());
+    gtk_window_set_icon_name(GTK_WINDOW(window_), "io.winrdp.Client");
 
-    const int init_w = std::clamp<int>(static_cast<int>(profile_.width), 640, 1920);
-    const int init_h = std::clamp<int>(static_cast<int>(profile_.height), 480, 1080);
-    gtk_window_set_default_size(GTK_WINDOW(window_), init_w, init_h);
+    compute_initial_windowed_size();
+    gtk_window_set_default_size(GTK_WINDOW(window_), windowed_w_, windowed_h_);
 
     setup_ui();
 
@@ -68,6 +103,15 @@ SessionWindow::SessionWindow(GtkApplication* app,
             self->primary_bound_surface_ = nullptr;
             self->primary_enter_handler_ = 0;
             self->window_ = nullptr;
+            self->toolbar_view_ = nullptr;
+            self->header_bar_ = nullptr;
+            self->header_title_ = nullptr;
+            self->hdr_grab_btn_ = nullptr;
+            self->hdr_cad_btn_ = nullptr;
+            self->hdr_sizing_btn_ = nullptr;
+            self->hdr_multimon_btn_ = nullptr;
+            self->hdr_fs_btn_ = nullptr;
+            self->overlay_ = nullptr;
             self->closed_ = true;
         }),
         this);
@@ -96,8 +140,24 @@ SessionWindow::SessionWindow(GtkApplication* app,
         "notify::fullscreened",
         G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
             auto* self = static_cast<SessionWindow*>(data);
-            if (self->input_ && self->window_) {
-                self->input_->set_fullscreen(gtk_window_is_fullscreen(GTK_WINDOW(self->window_)) == TRUE);
+            if (!self->window_ || self->closing_) return;
+            const bool fs = gtk_window_is_fullscreen(GTK_WINDOW(self->window_)) == TRUE;
+            if (self->input_) {
+                self->input_->set_fullscreen(fs);
+            }
+            if (!fs && self->is_fullscreen_) {
+                self->is_fullscreen_ = false;
+                if (self->is_multimon_active_) {
+                    self->destroy_secondary_panes();
+                    self->is_multimon_active_ = false;
+                    self->current_layout_ = VirtualDesktopLayout{};
+                    if (self->canvas_) self->canvas_->clear_source_rect();
+                    if (self->bar_) self->bar_->set_multimon(false, 1);
+                }
+                self->update_window_chrome();
+            } else if (fs && !self->is_fullscreen_) {
+                self->is_fullscreen_ = true;
+                self->update_window_chrome();
             }
             self->sync_coordinated_grab();
         }),
@@ -159,9 +219,195 @@ SessionWindow::~SessionWindow() {
     }
 }
 
+void SessionWindow::compute_initial_windowed_size() {
+    GdkDisplay* display = window_ ? gtk_widget_get_display(GTK_WIDGET(window_)) : nullptr;
+    const auto [mon_w, mon_h] = primary_logical_bounds(display);
+    const int max_w = std::max(640, (mon_w * 85) / 100);
+    const int max_h = std::max(480, (mon_h * 80) / 100);
+
+    if (smoke_test_mode_) {
+        windowed_w_ = std::clamp<int>(static_cast<int>(profile_.width), 320, 1920);
+        windowed_h_ = std::clamp<int>(static_cast<int>(profile_.height), 240, 1080);
+        return;
+    }
+
+    if (profile_.display_mode == DisplayMode::Windowed) {
+        windowed_w_ = std::clamp<int>(static_cast<int>(profile_.width), 640, max_w);
+        windowed_h_ = std::clamp<int>(static_cast<int>(profile_.height), 480, max_h);
+        return;
+    }
+
+    if (profile_.width >= 640 && profile_.height >= 480 &&
+        static_cast<int>(profile_.width) <= max_w &&
+        static_cast<int>(profile_.height) <= max_h) {
+        windowed_w_ = static_cast<int>(profile_.width);
+        windowed_h_ = static_cast<int>(profile_.height);
+    } else {
+        windowed_w_ = std::clamp<int>((mon_w * 78) / 100, 800, 1440);
+        windowed_h_ = std::clamp<int>((mon_h * 78) / 100, 560, 860);
+    }
+}
+
+bool SessionWindow::is_header_bar_visible() const {
+    return header_bar_ && gtk_widget_get_visible(header_bar_) == TRUE;
+}
+
+int SessionWindow::header_bar_height() const {
+    return header_bar_ ? gtk_widget_get_height(header_bar_) : 0;
+}
+
+void SessionWindow::update_window_chrome() {
+    const bool show_header = !is_fullscreen_;
+    if (header_bar_) {
+        gtk_widget_set_visible(header_bar_, show_header ? TRUE : FALSE);
+    }
+    if (toolbar_view_) {
+        adw_toolbar_view_set_reveal_top_bars(toolbar_view_, show_header ? TRUE : FALSE);
+    }
+    if (bar_) {
+        bar_->set_fullscreen(is_fullscreen_);
+        if (!smoke_test_mode_) {
+            bar_->set_enabled(is_fullscreen_);
+        }
+    }
+}
+
+void SessionWindow::update_header_telemetry(const SessionTelemetry& t) {
+    if (!header_title_) return;
+    char mon_str[32] = "";
+    if (t.monitor_count > 1) {
+        std::snprintf(mon_str, sizeof(mon_str), " (%u monitors)", t.monitor_count);
+    }
+    std::string codec = t.codec;
+    if (t.hw_accel && (t.codec == "AVC444" || t.codec == "AVC420")) {
+        codec += " VA";
+    }
+    char buf[160];
+    if (t.fps >= 1.0) {
+        std::snprintf(buf, sizeof(buf), "%u×%u%s • %s • %.0ffps",
+                      t.width, t.height, mon_str, codec.c_str(), t.fps);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%u×%u%s • %s",
+                      t.width, t.height, mon_str, codec.c_str());
+    }
+    adw_window_title_set_subtitle(header_title_, buf);
+}
+
+void SessionWindow::toggle_smart_sizing() {
+    profile_.smart_sizing = !profile_.smart_sizing;
+    if (canvas_) canvas_->set_smart_sizing(profile_.smart_sizing);
+    for (const auto& pane : secondary_panes_) {
+        if (pane && pane->canvas) {
+            pane->canvas->set_smart_sizing(profile_.smart_sizing);
+        }
+    }
+    if (bar_) bar_->set_smart_sizing(profile_.smart_sizing);
+    sync_css_flag(hdr_sizing_btn_, "winrdp-hdr-active", profile_.smart_sizing);
+    show_toast(profile_.smart_sizing ? "Smart Sizing enabled" : "1:1 Native Scaling");
+    if (callbacks_.on_profile_changed) callbacks_.on_profile_changed(profile_);
+    if (canvas_) gtk_widget_grab_focus(canvas_->widget());
+}
+
+void SessionWindow::send_ctrl_alt_del() {
+    if (session_) {
+        session_->send_ctrl_alt_del();
+        show_toast("Sent Ctrl+Alt+Del");
+        if (canvas_) gtk_widget_grab_focus(canvas_->widget());
+    }
+}
+
+void SessionWindow::release_all_grabs_immediately() {
+    release_all_pane_keys();
+    if (input_) {
+        input_->set_fullscreen(false);
+        input_->force_grab(false);
+    }
+    for (const auto& pane : secondary_panes_) {
+        if (pane && pane->input) {
+            pane->input->set_fullscreen(false);
+            pane->input->force_grab(false);
+        }
+    }
+    active_grab_window_ = nullptr;
+    if (bar_) {
+        bar_->set_grabbed(false);
+    }
+    sync_css_flag(hdr_grab_btn_, "winrdp-hdr-active", false);
+}
+
 void SessionWindow::setup_ui() {
+    toolbar_view_ = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
+    adw_toolbar_view_set_top_bar_style(toolbar_view_, ADW_TOOLBAR_RAISED);
+
+    header_bar_ = adw_header_bar_new();
+    header_title_ = ADW_WINDOW_TITLE(
+        adw_window_title_new(profile_.display_title().c_str(), profile_.hostname.c_str()));
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header_bar_), GTK_WIDGET(header_title_));
+
+    auto make_hdr_btn = [](const char* icon_name, const char* tooltip) {
+        GtkWidget* btn = gtk_button_new_from_icon_name(icon_name);
+        gtk_widget_add_css_class(btn, "flat");
+        gtk_widget_set_focus_on_click(btn, FALSE);
+        if (tooltip) gtk_widget_set_tooltip_text(btn, tooltip);
+        return btn;
+    };
+
+    hdr_grab_btn_ = make_hdr_btn("input-keyboard-symbolic", "Toggle System Key Capture (Right Ctrl)");
+    hdr_cad_btn_ = make_hdr_btn("system-lock-screen-symbolic", "Send Ctrl+Alt+Del");
+    hdr_sizing_btn_ = make_hdr_btn("zoom-fit-best-symbolic", "Toggle Smart Sizing");
+    hdr_fs_btn_ = make_hdr_btn("view-fullscreen-symbolic", "Enter Fullscreen (Ctrl+Alt+Enter)");
+    hdr_multimon_btn_ = make_hdr_btn("video-joined-displays-symbolic", "Toggle Multi-Monitor (Ctrl+Alt+M)");
+
+    sync_css_flag(hdr_sizing_btn_, "winrdp-hdr-active", profile_.smart_sizing);
+
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header_bar_), hdr_grab_btn_);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header_bar_), hdr_cad_btn_);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header_bar_), hdr_sizing_btn_);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header_bar_), hdr_fs_btn_);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header_bar_), hdr_multimon_btn_);
+
+    g_signal_connect(
+        hdr_grab_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer data) {
+            auto* self = static_cast<SessionWindow*>(data);
+            self->toggle_coordinated_grab();
+            if (self->canvas_) gtk_widget_grab_focus(self->canvas_->widget());
+        }),
+        this);
+    g_signal_connect(
+        hdr_cad_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer data) {
+            static_cast<SessionWindow*>(data)->send_ctrl_alt_del();
+        }),
+        this);
+    g_signal_connect(
+        hdr_sizing_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer data) {
+            static_cast<SessionWindow*>(data)->toggle_smart_sizing();
+        }),
+        this);
+    g_signal_connect(
+        hdr_fs_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer data) {
+            auto* self = static_cast<SessionWindow*>(data);
+            self->toggle_fullscreen();
+            if (self->canvas_) gtk_widget_grab_focus(self->canvas_->widget());
+        }),
+        this);
+    g_signal_connect(
+        hdr_multimon_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer data) {
+            auto* self = static_cast<SessionWindow*>(data);
+            self->toggle_multimon();
+            if (self->canvas_) gtk_widget_grab_focus(self->canvas_->widget());
+        }),
+        this);
+
+    adw_toolbar_view_add_top_bar(toolbar_view_, header_bar_);
+
     overlay_ = GTK_OVERLAY(gtk_overlay_new());
-    adw_application_window_set_content(window_, GTK_WIDGET(overlay_));
+    adw_toolbar_view_set_content(toolbar_view_, GTK_WIDGET(overlay_));
+    adw_application_window_set_content(window_, GTK_WIDGET(toolbar_view_));
 
     canvas_ = std::make_unique<GlCanvas>();
     canvas_->set_smart_sizing(profile_.smart_sizing);
@@ -193,27 +439,13 @@ void SessionWindow::setup_ui() {
         if (canvas_) gtk_widget_grab_focus(canvas_->widget());
     };
     bar_cb.on_send_cad = [this]() {
-        if (session_) {
-            session_->send_ctrl_alt_del();
-            show_toast("Sent Ctrl+Alt+Del");
-            if (canvas_) gtk_widget_grab_focus(canvas_->widget());
-        }
+        send_ctrl_alt_del();
     };
     bar_cb.on_toggle_smart_sizing = [this]() {
-        profile_.smart_sizing = !profile_.smart_sizing;
-        canvas_->set_smart_sizing(profile_.smart_sizing);
-        for (const auto& pane : secondary_panes_) {
-            if (pane && pane->canvas) {
-                pane->canvas->set_smart_sizing(profile_.smart_sizing);
-            }
-        }
-        bar_->set_smart_sizing(profile_.smart_sizing);
-        show_toast(profile_.smart_sizing ? "Smart Sizing enabled" : "1:1 Native Scaling");
-        if (callbacks_.on_profile_changed) callbacks_.on_profile_changed(profile_);
-        if (canvas_) gtk_widget_grab_focus(canvas_->widget());
+        toggle_smart_sizing();
     };
     bar_cb.on_minimize = [this]() {
-        suspend_coordinated_grab(true);
+        release_all_grabs_immediately();
         if (window_) gtk_window_minimize(GTK_WINDOW(window_));
         for (const auto& pane : secondary_panes_) {
             if (pane && pane->window) {
@@ -309,6 +541,8 @@ void SessionWindow::setup_ui() {
     gtk_widget_add_css_class(toast_label_, "winrdp-hud-toast");
     gtk_revealer_set_child(toast_revealer_, toast_label_);
     gtk_overlay_add_overlay(overlay_, GTK_WIDGET(toast_revealer_));
+
+    update_window_chrome();
 }
 
 bool SessionWindow::map_pane_pointer(size_t vp_idx,
@@ -341,9 +575,10 @@ bool SessionWindow::map_pane_pointer(size_t vp_idx,
 void SessionWindow::start_rdp_session() {
     auto all_monitors = query_local_monitors(gtk_widget_get_display(GTK_WIDGET(window_)));
     auto selected = filter_selected_monitors(all_monitors, profile_.selected_monitors);
-    if (profile_.display_mode == DisplayMode::Fullscreen && !selected.empty()) {
-        profile_.width = static_cast<uint32_t>(selected[0].width);
-        profile_.height = static_cast<uint32_t>(selected[0].height);
+    ConnectionProfile session_profile = profile_;
+    if (session_profile.display_mode == DisplayMode::Fullscreen && !selected.empty()) {
+        session_profile.width = static_cast<uint32_t>(selected[0].width);
+        session_profile.height = static_cast<uint32_t>(selected[0].height);
     }
 
     SessionCallbacks scb;
@@ -471,6 +706,7 @@ void SessionWindow::start_rdp_session() {
                 std::unique_ptr<TelMsg> m(static_cast<TelMsg*>(data));
                 if (auto a = m->alive.lock(); a && a->valid && !m->win->closing_) {
                     if (m->win->bar_) m->win->bar_->update_telemetry(m->t);
+                    m->win->update_header_telemetry(m->t);
                 }
                 return G_SOURCE_REMOVE;
             },
@@ -518,7 +754,7 @@ void SessionWindow::start_rdp_session() {
         return ok;
     };
 
-    session_ = std::make_unique<RdpSession>(profile_, std::move(all_monitors), std::move(scb));
+    session_ = std::make_unique<RdpSession>(std::move(session_profile), std::move(all_monitors), std::move(scb));
     canvas_->bind_framebuffer(&session_->framebuffer());
     session_->pointer_bridge().attach_widget(canvas_->widget());
 
@@ -556,6 +792,7 @@ void SessionWindow::start_rdp_session() {
         if (bar_) {
             bar_->set_grabbed(active_grab_window_ != nullptr || grabbed);
         }
+        sync_css_flag(hdr_grab_btn_, "winrdp-hdr-active", active_grab_window_ != nullptr || grabbed);
     };
     icb.map_pointer = [this](double wx, double wy, int& rx, int& ry) {
         return map_pane_pointer(0, canvas_.get(), wx, wy, rx, ry);
@@ -576,9 +813,26 @@ void SessionWindow::present() {
          profile_.display_mode == DisplayMode::MultiMonitor)) {
         apply_fullscreen_state(true);
     } else {
+        is_fullscreen_ = false;
+        update_window_chrome();
         gtk_window_present(GTK_WINDOW(window_));
     }
     if (canvas_) gtk_widget_grab_focus(canvas_->widget());
+}
+
+void SessionWindow::present_and_focus() {
+    if (!window_ || closing_) return;
+    if (is_multimon_active_) {
+        for (const auto& pane : secondary_panes_) {
+            if (pane && pane->window) {
+                gtk_window_present(pane->window);
+            }
+        }
+    }
+    gtk_window_present(GTK_WINDOW(window_));
+    if (canvas_) {
+        gtk_widget_grab_focus(canvas_->widget());
+    }
 }
 
 void SessionWindow::close() {
@@ -700,6 +954,20 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
 
     GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(window_));
 
+    if (enter_fullscreen && !is_fullscreen_ &&
+        gtk_widget_get_mapped(GTK_WIDGET(window_)) == TRUE &&
+        gtk_window_is_maximized(GTK_WINDOW(window_)) == FALSE) {
+        const auto [mon_w, mon_h] = primary_logical_bounds(display);
+        const int max_w = std::max(640, (mon_w * 85) / 100);
+        const int max_h = std::max(480, (mon_h * 80) / 100);
+        const int cur_w = gtk_widget_get_width(GTK_WIDGET(window_));
+        const int cur_h = gtk_widget_get_height(GTK_WIDGET(window_));
+        if (cur_w >= 640 && cur_h >= 480) {
+            windowed_w_ = std::clamp(cur_w, 640, max_w);
+            windowed_h_ = std::clamp(cur_h, 480, max_h);
+        }
+    }
+
     if (enter_fullscreen && layout.viewports.size() > 1) {
         if (resize_timer_id_ != 0) {
             g_source_remove(resize_timer_id_);
@@ -707,6 +975,8 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         }
         is_multimon_active_ = true;
         current_layout_ = layout;
+        is_fullscreen_ = true;
+        update_window_chrome();
 
         const MonitorViewport& vp0 = layout.viewports[0];
         canvas_->set_source_rect(
@@ -726,12 +996,13 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
             auto pane = std::make_unique<SecondaryMonitorPane>();
             pane->viewport = vp;
 
-            GtkWidget* sw = gtk_window_new();
+            AdwApplicationWindow* sw = ADW_APPLICATION_WINDOW(adw_application_window_new(app_));
             pane->window = GTK_WINDOW(sw);
-            if (app_) {
-                gtk_window_set_application(pane->window, app_);
-            }
-            gtk_window_set_title(pane->window, ("WinRDP — " + profile_.display_title()).c_str());
+            gtk_window_set_icon_name(pane->window, "io.winrdp.Client");
+            gtk_window_set_title(pane->window,
+                                 ("WinRDP — " + profile_.display_title() +
+                                  " (Display " + std::to_string(i + 1) + ")")
+                                     .c_str());
             gtk_window_set_default_size(pane->window,
                                         std::max(320, vp.monitor.logical_width),
                                         std::max(200, vp.monitor.logical_height));
@@ -744,7 +1015,7 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
             }
             pane->canvas->set_source_rect(
                 vp.fb_x, vp.fb_y, static_cast<int>(vp.fb_width), static_cast<int>(vp.fb_height));
-            gtk_window_set_child(pane->window, pane->canvas->widget());
+            adw_application_window_set_content(sw, pane->canvas->widget());
 
             InputCallbacks icb;
             icb.on_toggle_bar = [this]() {
@@ -775,6 +1046,7 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
                 if (bar_) {
                     bar_->set_grabbed(active_grab_window_ != nullptr || grabbed);
                 }
+                sync_css_flag(hdr_grab_btn_, "winrdp-hdr-active", active_grab_window_ != nullptr || grabbed);
             };
             icb.map_pointer = [this, i, c = pane->canvas.get()](double wx, double wy, int& rx, int& ry) {
                 return map_pane_pointer(i, c, wx, wy, rx, ry);
@@ -854,6 +1126,7 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         }
 
         if (bar_) bar_->set_multimon(true, layout.viewports.size());
+        sync_css_flag(hdr_multimon_btn_, "winrdp-hdr-active", true);
         gtk_window_present(GTK_WINDOW(window_));
         last_focused_window_ = GTK_WINDOW(window_);
         if (canvas_) gtk_widget_grab_focus(canvas_->widget());
@@ -865,8 +1138,12 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
     current_layout_ = VirtualDesktopLayout{};
     canvas_->clear_source_rect();
     if (bar_) bar_->set_multimon(false, 1);
+    sync_css_flag(hdr_multimon_btn_, "winrdp-hdr-active", false);
 
     if (enter_fullscreen) {
+        is_fullscreen_ = true;
+        update_window_chrome();
+
         GdkMonitor* target = nullptr;
         auto all_monitors = query_local_monitors(display);
         if (profile_.selected_monitors.size() == 1 && !all_monitors.empty()) {
@@ -883,7 +1160,13 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         }
         gtk_window_present(GTK_WINDOW(window_));
     } else {
+        release_all_grabs_immediately();
+        is_fullscreen_ = false;
+        update_window_chrome();
+
         gtk_window_unfullscreen(GTK_WINDOW(window_));
+        gtk_window_unmaximize(GTK_WINDOW(window_));
+        gtk_window_set_default_size(GTK_WINDOW(window_), windowed_w_, windowed_h_);
         gtk_window_present(GTK_WINDOW(window_));
     }
     sync_coordinated_grab();
@@ -975,7 +1258,16 @@ void SessionWindow::on_pane_focus_changed(GtkWindow* win, bool focused) {
 
     if (focus_leave_timer_id_ != 0) {
         g_source_remove(focus_leave_timer_id_);
+        focus_leave_timer_id_ = 0;
     }
+
+    if (!is_multimon_active_) {
+        last_focused_window_ = nullptr;
+        release_all_pane_keys();
+        sync_coordinated_grab();
+        return;
+    }
+
     focus_leave_timer_id_ = g_timeout_add(
         40,
         +[](gpointer data) -> gboolean {
@@ -1028,19 +1320,10 @@ void SessionWindow::suspend_coordinated_grab(bool suspend) {
 }
 
 void SessionWindow::sync_coordinated_grab() {
-    bool any_fs = window_ && gtk_window_is_fullscreen(GTK_WINDOW(window_)) == TRUE;
-    if (!any_fs) {
-        for (const auto& pane : secondary_panes_) {
-            if (pane && pane->window && gtk_window_is_fullscreen(pane->window) == TRUE) {
-                any_fs = true;
-                break;
-            }
-        }
-    }
-    is_fullscreen_ = any_fs;
     if (bar_) {
         bar_->set_fullscreen(is_fullscreen_);
     }
+    sync_css_flag(hdr_multimon_btn_, "winrdp-hdr-active", is_multimon_active_);
 
     bool want_mode = false;
     if (profile_.keyboard_grab_mode == KeyboardGrabMode::AlwaysWhenFocused) {
@@ -1078,6 +1361,7 @@ void SessionWindow::sync_coordinated_grab() {
         if (bar_) {
             bar_->set_grabbed(want_wl_grab);
         }
+        sync_css_flag(hdr_grab_btn_, "winrdp-hdr-active", want_wl_grab);
         return;
     }
 
@@ -1123,6 +1407,7 @@ void SessionWindow::sync_coordinated_grab() {
     if (bar_) {
         bar_->set_grabbed(active_grab_window_ != nullptr);
     }
+    sync_css_flag(hdr_grab_btn_, "winrdp-hdr-active", active_grab_window_ != nullptr);
 }
 
 void SessionWindow::attach_surface_monitor_guard(GtkWindow* win,
@@ -1283,6 +1568,7 @@ void SessionWindow::update_status_banner(SessionState state,
     switch (state) {
         case SessionState::Idle:
             gtk_widget_set_visible(status_box_, FALSE);
+            if (header_title_) adw_window_title_set_subtitle(header_title_, profile_.hostname.c_str());
             break;
         case SessionState::Connecting:
             gtk_widget_set_visible(status_box_, TRUE);
@@ -1292,10 +1578,14 @@ void SessionWindow::update_status_banner(SessionState state,
             gtk_label_set_text(GTK_LABEL(status_detail_), msg.c_str());
             gtk_widget_set_visible(status_retry_btn_, FALSE);
             gtk_button_set_label(GTK_BUTTON(status_cancel_btn_), "Cancel");
+            if (header_title_) adw_window_title_set_subtitle(header_title_, "Connecting...");
             break;
         case SessionState::Connected:
             gtk_spinner_stop(GTK_SPINNER(status_spinner_));
             gtk_widget_set_visible(status_box_, FALSE);
+            if (header_title_) {
+                adw_window_title_set_subtitle(header_title_, ("Connected — " + profile_.hostname).c_str());
+            }
             suspend_coordinated_grab(false);
             if (canvas_) gtk_widget_grab_focus(canvas_->widget());
             break;
@@ -1310,6 +1600,7 @@ void SessionWindow::update_status_banner(SessionState state,
             gtk_label_set_text(GTK_LABEL(status_detail_), msg.c_str());
             gtk_widget_set_visible(status_retry_btn_, FALSE);
             gtk_button_set_label(GTK_BUTTON(status_cancel_btn_), "Cancel");
+            if (header_title_) adw_window_title_set_subtitle(header_title_, "Reconnecting...");
             break;
         }
         case SessionState::Disconnected:
@@ -1326,6 +1617,7 @@ void SessionWindow::update_status_banner(SessionState state,
             gtk_label_set_text(GTK_LABEL(status_detail_), msg.c_str());
             gtk_widget_set_visible(status_retry_btn_, TRUE);
             gtk_button_set_label(GTK_BUTTON(status_cancel_btn_), "Close");
+            if (header_title_) adw_window_title_set_subtitle(header_title_, "Connection Failed");
             break;
     }
 }

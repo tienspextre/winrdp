@@ -36,6 +36,9 @@ public:
     // (single window, zero X11 popup flicker!)
     void attach_to_overlay(GtkOverlay* overlay);
 
+    void set_enabled(bool enabled);
+    bool is_enabled() const { return enabled_; }
+
     void set_mode(ConnectionBarMode mode);
     ConnectionBarMode mode() const { return mode_; }
 
@@ -78,6 +81,7 @@ private:
     GtkWidget* fs_btn_ = nullptr;
     GtkWidget* close_btn_ = nullptr;
 
+    bool enabled_ = true;
     bool pointer_in_trigger_ = false;
     bool pointer_in_bar_ = false;
     bool temp_revealed_ = false;

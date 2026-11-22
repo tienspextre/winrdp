@@ -33,13 +33,20 @@ ManagerWindow::ManagerWindow(GtkApplication* app, ProfileStore* store, ManagerCa
       callbacks_(std::move(callbacks)) {
     window_ = ADW_APPLICATION_WINDOW(adw_application_window_new(app));
     gtk_window_set_title(GTK_WINDOW(window_), "WinRDP — Remote Desktop Manager");
+    gtk_window_set_icon_name(GTK_WINDOW(window_), "io.winrdp.Client");
     gtk_window_set_default_size(GTK_WINDOW(window_), 1040, 680);
 
     g_signal_connect(
         window_,
         "destroy",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
-            static_cast<ManagerWindow*>(data)->window_ = nullptr;
+            auto* self = static_cast<ManagerWindow*>(data);
+            self->window_ = nullptr;
+            self->active_bar_ = nullptr;
+            self->active_list_box_ = nullptr;
+            self->sidebar_list_ = nullptr;
+            self->flow_box_ = nullptr;
+            self->stack_ = nullptr;
         }),
         this);
 
@@ -56,12 +63,93 @@ ManagerWindow::~ManagerWindow() {
 }
 
 void ManagerWindow::present() {
+    if (!window_) return;
     gtk_window_present(GTK_WINDOW(window_));
 }
 
 void ManagerWindow::refresh() {
+    if (!window_) return;
     rebuild_sidebar();
     rebuild_cards();
+}
+
+void ManagerWindow::set_active_sessions(const std::vector<ActiveSessionSummary>& sessions) {
+    if (!window_ || !active_bar_ || !active_list_box_) return;
+
+    while (GtkWidget* child = gtk_widget_get_first_child(active_list_box_)) {
+        gtk_box_remove(GTK_BOX(active_list_box_), child);
+    }
+
+    if (sessions.empty()) {
+        gtk_widget_set_visible(active_bar_, FALSE);
+        return;
+    }
+
+    struct PillCtx {
+        ManagerWindow* self;
+        uint64_t id;
+    };
+    auto destroy_ctx = [](gpointer d, GClosure*) { delete static_cast<PillCtx*>(d); };
+
+    for (const auto& s : sessions) {
+        GtkWidget* pill = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(pill, "linked");
+        gtk_widget_add_css_class(pill, "winrdp-active-session-pill");
+
+        GtkWidget* focus_btn = gtk_button_new();
+        GtkWidget* inner = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget* ico = gtk_image_new_from_icon_name(
+            s.multimon ? "video-joined-displays-symbolic" : "computer-symbolic");
+        std::string label_text = s.title;
+        if (label_text.empty()) label_text = s.host;
+        GtkWidget* lbl = gtk_label_new(label_text.c_str());
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(lbl), 24);
+        gtk_box_append(GTK_BOX(inner), ico);
+        gtk_box_append(GTK_BOX(inner), lbl);
+        gtk_button_set_child(GTK_BUTTON(focus_btn), inner);
+        gtk_widget_set_tooltip_text(
+            focus_btn,
+            (s.host.empty()
+                 ? std::string("Switch to active remote session")
+                 : ("Switch to active remote session (" + s.host + ")"))
+                .c_str());
+
+        GtkWidget* disc_btn = gtk_button_new_from_icon_name("window-close-symbolic");
+        gtk_widget_set_tooltip_text(disc_btn, "Disconnect session");
+
+        g_signal_connect_data(
+            focus_btn,
+            "clicked",
+            G_CALLBACK(+[](GtkButton*, gpointer d) {
+                auto* ctx = static_cast<PillCtx*>(d);
+                if (ctx->self->callbacks_.on_focus_session) {
+                    ctx->self->callbacks_.on_focus_session(ctx->id);
+                }
+            }),
+            new PillCtx{this, s.id},
+            destroy_ctx,
+            static_cast<GConnectFlags>(0));
+
+        g_signal_connect_data(
+            disc_btn,
+            "clicked",
+            G_CALLBACK(+[](GtkButton*, gpointer d) {
+                auto* ctx = static_cast<PillCtx*>(d);
+                if (ctx->self->callbacks_.on_disconnect_session) {
+                    ctx->self->callbacks_.on_disconnect_session(ctx->id);
+                }
+            }),
+            new PillCtx{this, s.id},
+            destroy_ctx,
+            static_cast<GConnectFlags>(0));
+
+        gtk_box_append(GTK_BOX(pill), focus_btn);
+        gtk_box_append(GTK_BOX(pill), disc_btn);
+        gtk_box_append(GTK_BOX(active_list_box_), pill);
+    }
+
+    gtk_widget_set_visible(active_bar_, TRUE);
 }
 
 void ManagerWindow::setup_ui() {
@@ -162,6 +250,25 @@ void ManagerWindow::setup_ui() {
     g_object_bind_property(search_btn, "active", search_bar_, "search-mode-enabled",
                            G_BINDING_BIDIRECTIONAL);
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(content_toolbar), search_bar_);
+
+    // Active remote sessions bar (hidden when no active sessions)
+    active_bar_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_widget_add_css_class(active_bar_, "winrdp-active-sessions-bar");
+    gtk_widget_set_visible(active_bar_, FALSE);
+
+    GtkWidget* active_lbl = gtk_label_new("Active Sessions:");
+    gtk_widget_add_css_class(active_lbl, "heading");
+    gtk_box_append(GTK_BOX(active_bar_), active_lbl);
+
+    GtkWidget* active_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(
+        GTK_SCROLLED_WINDOW(active_scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
+    gtk_widget_set_hexpand(active_scroll, TRUE);
+    active_list_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(active_scroll), active_list_box_);
+    gtk_box_append(GTK_BOX(active_bar_), active_scroll);
+
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(content_toolbar), active_bar_);
 
     g_signal_connect(
         search_entry_,

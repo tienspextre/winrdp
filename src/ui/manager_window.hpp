@@ -5,14 +5,24 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace winrdp {
 
+struct ActiveSessionSummary {
+    uint64_t id = 0;
+    std::string title;
+    std::string host;
+    bool multimon = false;
+};
+
 struct ManagerCallbacks {
     std::function<void(const ConnectionProfile& profile)> on_connect;
+    std::function<void(uint64_t session_id)> on_focus_session;
+    std::function<void(uint64_t session_id)> on_disconnect_session;
 };
 
 class ManagerWindow {
@@ -25,6 +35,7 @@ public:
 
     void present();
     void refresh();
+    void set_active_sessions(const std::vector<ActiveSessionSummary>& sessions);
     GtkWindow* gtk_window() const { return GTK_WINDOW(window_); }
 
 private:
@@ -56,6 +67,8 @@ private:
     GtkWidget* quick_multimon_btn_ = nullptr;
     GtkWidget* search_bar_ = nullptr;
     GtkWidget* search_entry_ = nullptr;
+    GtkWidget* active_bar_ = nullptr;
+    GtkWidget* active_list_box_ = nullptr;
     GtkWidget* stack_ = nullptr;
     GtkWidget* flow_box_ = nullptr;
 

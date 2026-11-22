@@ -28,20 +28,28 @@ public:
     SessionWindow(GtkApplication* app,
                   ConnectionProfile profile,
                   SessionWindowCallbacks callbacks = {},
-                  bool smoke_test_mode = false);
+                  bool smoke_test_mode = false,
+                  uint64_t session_id = 0);
     ~SessionWindow();
 
     SessionWindow(const SessionWindow&) = delete;
     SessionWindow& operator=(const SessionWindow&) = delete;
 
     void present();
+    void present_and_focus();
     void close();
     bool is_closed() const { return closed_; }
+
+    uint64_t session_id() const { return session_id_; }
+    std::string display_title() const { return profile_.display_title(); }
+    std::string hostname() const { return profile_.hostname; }
 
     GtkWindow* gtk_window() const { return GTK_WINDOW(window_); }
     GlCanvas& canvas() { return *canvas_; }
     ConnectionBar& connection_bar() { return *bar_; }
     bool is_multimon_active() const { return is_multimon_active_; }
+    bool is_header_bar_visible() const;
+    int header_bar_height() const;
 
     void show_toast(const std::string& text, guint duration_ms = 1800);
 
@@ -60,6 +68,12 @@ private:
     };
 
     void setup_ui();
+    void compute_initial_windowed_size();
+    void update_window_chrome();
+    void update_header_telemetry(const SessionTelemetry& t);
+    void toggle_smart_sizing();
+    void send_ctrl_alt_del();
+    void release_all_grabs_immediately();
     void start_rdp_session();
     void toggle_fullscreen();
     void toggle_multimon();
@@ -92,10 +106,22 @@ private:
     ConnectionProfile profile_;
     SessionWindowCallbacks callbacks_;
     bool smoke_test_mode_ = false;
+    uint64_t session_id_ = 0;
     std::shared_ptr<Alive> alive_ = std::make_shared<Alive>();
 
     AdwApplicationWindow* window_ = nullptr;
+    AdwToolbarView* toolbar_view_ = nullptr;
+    GtkWidget* header_bar_ = nullptr;
+    AdwWindowTitle* header_title_ = nullptr;
+    GtkWidget* hdr_grab_btn_ = nullptr;
+    GtkWidget* hdr_cad_btn_ = nullptr;
+    GtkWidget* hdr_sizing_btn_ = nullptr;
+    GtkWidget* hdr_multimon_btn_ = nullptr;
+    GtkWidget* hdr_fs_btn_ = nullptr;
     GtkOverlay* overlay_ = nullptr;
+
+    int windowed_w_ = 1280;
+    int windowed_h_ = 800;
 
     std::unique_ptr<GlCanvas> canvas_;
     std::unique_ptr<ConnectionBar> bar_;

@@ -236,14 +236,38 @@ void ConnectionBar::cancel_timers() {
     }
 }
 
+void ConnectionBar::set_enabled(bool enabled) {
+    enabled_ = enabled;
+    if (!enabled_) {
+        cancel_timers();
+        temp_revealed_ = false;
+        if (trigger_strip_) {
+            gtk_widget_set_visible(trigger_strip_, FALSE);
+            gtk_widget_set_can_target(trigger_strip_, FALSE);
+        }
+        if (revealer_) {
+            gtk_revealer_set_reveal_child(revealer_, FALSE);
+            gtk_widget_set_visible(GTK_WIDGET(revealer_), FALSE);
+        }
+        return;
+    }
+    if (revealer_) {
+        gtk_widget_set_visible(GTK_WIDGET(revealer_), TRUE);
+    }
+    apply_mode_state();
+}
+
 void ConnectionBar::set_mode(ConnectionBarMode mode) {
     mode_ = mode;
     temp_revealed_ = false;
     cancel_timers();
-    apply_mode_state();
+    if (enabled_) {
+        apply_mode_state();
+    }
 }
 
 void ConnectionBar::toggle_visibility_hotkey() {
+    if (!enabled_) return;
     cancel_timers();
     if (mode_ == ConnectionBarMode::Hidden) {
         temp_revealed_ = !temp_revealed_;
@@ -264,6 +288,7 @@ void ConnectionBar::toggle_visibility_hotkey() {
 }
 
 void ConnectionBar::apply_mode_state(bool force_reveal) {
+    if (!enabled_) return;
     if (mode_ == ConnectionBarMode::Pinned) {
         gtk_widget_add_css_class(bar_box_, "pinned");
         gtk_widget_add_css_class(pin_btn_, "active");
@@ -286,6 +311,7 @@ void ConnectionBar::apply_mode_state(bool force_reveal) {
 }
 
 void ConnectionBar::schedule_hover_reveal() {
+    if (!enabled_) return;
     if (hide_timer_id_ != 0) {
         g_source_remove(hide_timer_id_);
         hide_timer_id_ = 0;

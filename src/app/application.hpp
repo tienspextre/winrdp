@@ -38,12 +38,14 @@ public:
 private:
     void load_css();
     void launch_session(ConnectionProfile profile);
+    void sync_active_sessions_to_manager();
     int run_smoke_test();
 
     AdwApplication* app_ = nullptr;
     ProfileStore store_;
     std::unique_ptr<ManagerWindow> manager_;
     std::vector<std::unique_ptr<SessionWindow>> sessions_;
+    uint64_t next_session_id_ = 1;
     CliOptions cli_;
 };
 

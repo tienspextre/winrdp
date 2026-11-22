@@ -24,7 +24,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.1.1"
+#define WINRDP_VERSION "1.1.2"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -41,6 +41,15 @@ constexpr const char* kFallbackCss = R"CSS(
     border-radius: 999px;
     padding: 8px 18px;
     color: #ffffff;
+}
+.winrdp-hdr-active {
+    background-color: alpha(@accent_bg_color, 0.28);
+    color: @accent_color;
+}
+.winrdp-active-sessions-bar {
+    background-color: alpha(@accent_bg_color, 0.10);
+    border-bottom: 1px solid alpha(@borders, 0.85);
+    padding: 6px 14px;
 }
 )CSS";
 
@@ -224,24 +233,46 @@ void Application::launch_session(ConnectionProfile profile) {
                                                return s->is_closed();
                                            }),
                             self->sessions_.end());
+                        self->sync_active_sessions_to_manager();
                         return G_SOURCE_REMOVE;
                     },
                     this);
             },
         },
-        false);
+        false,
+        next_session_id_++);
 
     holder->present();
     sessions_.push_back(std::move(holder));
+    sync_active_sessions_to_manager();
+}
+
+void Application::sync_active_sessions_to_manager() {
+    if (!manager_) return;
+    std::vector<ActiveSessionSummary> active;
+    active.reserve(sessions_.size());
+    for (const auto& s : sessions_) {
+        if (!s || s->is_closed()) continue;
+        active.push_back(ActiveSessionSummary{
+            .id = s->session_id(),
+            .title = s->display_title(),
+            .host = s->hostname(),
+            .multimon = s->is_multimon_active(),
+        });
+    }
+    manager_->set_active_sessions(active);
 }
 
 int Application::run_smoke_test() {
+    g_set_prgname("io.winrdp.Client");
+    g_set_application_name("WinRDP");
     adw_init();
     if (!gtk_init_check()) {
         std::cerr << "SMOKE_TEST_FAIL: gtk_init_check failed (check DISPLAY)\n";
         return 2;
     }
     load_css();
+    gtk_window_set_default_icon_name("io.winrdp.Client");
 
     app_ = adw_application_new("io.winrdp.Client.SmokeTest", G_APPLICATION_NON_UNIQUE);
     g_application_register(G_APPLICATION(app_), nullptr, nullptr);
@@ -279,14 +310,14 @@ int Application::run_smoke_test() {
     sess_win->canvas().bind_framebuffer(&test_fb);
 
     // Secondary GlCanvas rendering right half (320..640) from the same shared Framebuffer
-    GtkWindow* sec_win = GTK_WINDOW(gtk_window_new());
-    gtk_window_set_application(sec_win, GTK_APPLICATION(app_));
-    gtk_window_set_title(sec_win, "WinRDP SmokeTest Secondary Pane");
-    gtk_window_set_default_size(sec_win, 320, 480);
+    AdwApplicationWindow* sec_win = ADW_APPLICATION_WINDOW(adw_application_window_new(GTK_APPLICATION(app_)));
+    gtk_window_set_icon_name(GTK_WINDOW(sec_win), "io.winrdp.Client");
+    gtk_window_set_title(GTK_WINDOW(sec_win), "WinRDP SmokeTest Secondary Pane");
+    gtk_window_set_default_size(GTK_WINDOW(sec_win), 320, 480);
     auto right_canvas = std::make_unique<GlCanvas>();
     right_canvas->set_source_rect(320, 0, 320, 480);
     right_canvas->bind_framebuffer(&test_fb);
-    gtk_window_set_child(sec_win, right_canvas->widget());
+    adw_application_window_set_content(sec_win, right_canvas->widget());
 
     // Cycle all 3 ConnectionBar modes inside the single GtkOverlay
     sess_win->connection_bar().set_mode(ConnectionBarMode::Pinned);
@@ -296,7 +327,7 @@ int Application::run_smoke_test() {
     sess_win->connection_bar().set_mode(ConnectionBarMode::AutoHide);
 
     sess_win->present();
-    gtk_window_present(sec_win);
+    gtk_window_present(GTK_WINDOW(sec_win));
     sess_win->canvas().request_redraw();
     right_canvas->request_redraw();
 
@@ -326,6 +357,11 @@ int Application::run_smoke_test() {
                                 right_canvas->dirty_upload_count() >= 1 &&
                                 map_ok;
     const bool mgr_ok = gtk_widget_get_realized(GTK_WIDGET(manager_->gtk_window())) == TRUE;
+    const bool header_ok = sess_win->is_header_bar_visible() && sess_win->header_bar_height() > 0;
+    const char* prgname = g_get_prgname();
+    const char* win_icon = gtk_window_get_icon_name(sess_win->gtk_window());
+    const bool identity_ok = (prgname && std::string(prgname) == "io.winrdp.Client") &&
+                             (win_icon && std::string(win_icon) == "io.winrdp.Client");
 
     const std::string css_path = resolve_css_path();
 
@@ -344,16 +380,23 @@ int Application::run_smoke_test() {
               << ", map_rx=" << rx << "): " << (multimon_gl_ok ? "OK" : "FAIL") << "\n";
     std::cout << "ConnectionBar overlay modes (Pinned=" << pinned_ok
               << ", Hidden=" << hidden_ok << "): " << ((pinned_ok && hidden_ok) ? "OK" : "FAIL") << "\n";
+    std::cout << "Windowed HeaderBar (visible=" << sess_win->is_header_bar_visible()
+              << ", height=" << sess_win->header_bar_height() << "px): "
+              << (header_ok ? "OK" : "FAIL") << "\n";
+    std::cout << "App identity (prgname=" << (prgname ? prgname : "(null)")
+              << ", icon=" << (win_icon ? win_icon : "(null)") << "): "
+              << (identity_ok ? "OK" : "FAIL") << "\n";
     std::cout << "ManagerWindow realized: " << (mgr_ok ? "OK" : "FAIL") << "\n";
 
     right_canvas.reset();
-    gtk_window_destroy(sec_win);
+    gtk_window_destroy(GTK_WINDOW(sec_win));
     sess_win.reset();
     manager_.reset();
     g_object_unref(app_);
     app_ = nullptr;
 
-    if (!gl_ok || !multimon_gl_ok || !pinned_ok || !hidden_ok || !mgr_ok || !RdpSession::has_h264_hwaccel_support()) {
+    if (!gl_ok || !multimon_gl_ok || !pinned_ok || !hidden_ok || !header_ok || !identity_ok || !mgr_ok ||
+        !RdpSession::has_h264_hwaccel_support()) {
         std::cerr << "SMOKE_TEST_FAIL\n";
         return 1;
     }
@@ -408,6 +451,9 @@ int Application::run(int argc, char** argv) {
 
     store_.load();
 
+    g_set_prgname("io.winrdp.Client");
+    g_set_application_name("WinRDP");
+
     app_ = adw_application_new("io.winrdp.Client", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(
         app_,
@@ -415,6 +461,7 @@ int Application::run(int argc, char** argv) {
         G_CALLBACK(+[](GtkApplication*, gpointer data) {
             auto* self = static_cast<Application*>(data);
             self->load_css();
+            gtk_window_set_default_icon_name("io.winrdp.Client");
 
             if (!self->cli_.target.empty()) {
                 ConnectionProfile direct;
@@ -438,8 +485,25 @@ int Application::run(int argc, char** argv) {
                         .on_connect = [self](const ConnectionProfile& p) {
                             self->launch_session(p);
                         },
+                        .on_focus_session = [self](uint64_t sid) {
+                            for (const auto& s : self->sessions_) {
+                                if (s && !s->is_closed() && s->session_id() == sid) {
+                                    s->present_and_focus();
+                                    return;
+                                }
+                            }
+                        },
+                        .on_disconnect_session = [self](uint64_t sid) {
+                            for (const auto& s : self->sessions_) {
+                                if (s && !s->is_closed() && s->session_id() == sid) {
+                                    s->close();
+                                    return;
+                                }
+                            }
+                        },
                     });
             }
+            self->sync_active_sessions_to_manager();
             self->manager_->present();
         }),
         this);
