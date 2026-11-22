@@ -21,9 +21,9 @@
 Tải file `.deb` mới nhất tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (đã đóng gói sẵn **FreeRDP 3.33.1** bật **H.264/AVC444 + VA-API** trong `/usr/lib/winrdp/lib/`, không xung đột với thư viện hệ thống) rồi cài bằng `apt`:
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.2/winrdp_1.1.2_amd64.deb
+wget https://github.com/tienspextre/winrdp/releases/download/v1.1.3/winrdp_1.1.3_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.1.2_amd64.deb
+sudo apt install ./winrdp_1.1.3_amd64.deb
 ```
 
 ## Phím tắt mặc định trong phiên RDP

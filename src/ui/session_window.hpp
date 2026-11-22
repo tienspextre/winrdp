@@ -53,6 +53,8 @@ public:
 
     void show_toast(const std::string& text, guint duration_ms = 1800);
 
+    static void apply_skip_taskbar_hint(GtkWindow* win);
+
 private:
     struct Alive {
         bool valid = true;
@@ -87,6 +89,12 @@ private:
 
     void on_pane_focus_changed(GtkWindow* win, bool focused);
     void on_pane_active_changed(GtkWindow* win);
+    void on_pane_pointer_pressed(GtkWindow* win);
+    void raise_sibling_panes(GtkWindow* active_win);
+    void on_primary_toplevel_state_changed();
+    void attach_primary_state_observer(GdkSurface* surface);
+    void detach_primary_state_observer();
+    GtkWindow* find_focused_pane() const;
     void toggle_coordinated_grab();
     void suspend_coordinated_grab(bool suspend);
     void sync_coordinated_grab();
@@ -155,6 +163,13 @@ private:
     // Coordinated grab across primary + secondary monitor windows
     bool user_grab_enabled_ = true;
     bool grab_suspended_ = false;
+    bool session_had_focus_ = false;
+    bool raising_group_ = false;
+    uint64_t last_group_raise_ms_ = 0;
+    guint group_raise_guard_timer_id_ = 0;
+    bool primary_was_minimized_ = false;
+    GdkSurface* primary_state_surface_ = nullptr;
+    gulong primary_state_handler_ = 0;
     GtkWindow* last_focused_window_ = nullptr;
     GtkWindow* active_grab_window_ = nullptr;
     guint focus_leave_timer_id_ = 0;

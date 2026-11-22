@@ -4,6 +4,12 @@
 #include "input/monitor_layout.hpp"
 #include "ui/cert_auth_dialogs.hpp"
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/x11/gdkx.h>
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -80,6 +86,7 @@ SessionWindow::SessionWindow(GtkApplication* app,
             auto* self = static_cast<SessionWindow*>(data);
             self->closing_ = true;
             self->closed_ = true;
+            self->detach_primary_state_observer();
             self->detach_surface_monitor_guard(self->primary_bound_surface_, self->primary_enter_handler_);
             self->suspend_coordinated_grab(true);
             self->destroy_secondary_panes();
@@ -100,6 +107,8 @@ SessionWindow::SessionWindow(GtkApplication* app,
         "destroy",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
             auto* self = static_cast<SessionWindow*>(data);
+            self->primary_state_surface_ = nullptr;
+            self->primary_state_handler_ = 0;
             self->primary_bound_surface_ = nullptr;
             self->primary_enter_handler_ = 0;
             self->window_ = nullptr;
@@ -123,6 +132,7 @@ SessionWindow::SessionWindow(GtkApplication* app,
             auto* self = static_cast<SessionWindow*>(data);
             self->attach_surface_monitor_guard(
                 GTK_WINDOW(self->window_), self->primary_bound_surface_, self->primary_enter_handler_);
+            self->attach_primary_state_observer(gtk_native_get_surface(GTK_NATIVE(self->window_)));
         }),
         this);
 
@@ -131,6 +141,7 @@ SessionWindow::SessionWindow(GtkApplication* app,
         "unrealize",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
             auto* self = static_cast<SessionWindow*>(data);
+            self->detach_primary_state_observer();
             self->detach_surface_monitor_guard(self->primary_bound_surface_, self->primary_enter_handler_);
         }),
         this);
@@ -182,7 +193,12 @@ SessionWindow::SessionWindow(GtkApplication* app,
 SessionWindow::~SessionWindow() {
     alive_->valid = false;
     detach_monitor_hotplug();
+    detach_primary_state_observer();
     detach_surface_monitor_guard(primary_bound_surface_, primary_enter_handler_);
+    if (group_raise_guard_timer_id_ != 0) {
+        g_source_remove(group_raise_guard_timer_id_);
+        group_raise_guard_timer_id_ = 0;
+    }
     if (toast_timer_id_ != 0) {
         g_source_remove(toast_timer_id_);
         toast_timer_id_ = 0;
@@ -316,15 +332,80 @@ void SessionWindow::send_ctrl_alt_del() {
     }
 }
 
+void SessionWindow::apply_skip_taskbar_hint(GtkWindow* win) {
+#ifdef GDK_WINDOWING_X11
+    if (!win) return;
+    GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(win));
+    if (!surface || !GDK_IS_X11_SURFACE(surface)) return;
+
+    GdkDisplay* display = gdk_surface_get_display(surface);
+    Display* xdisplay = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
+    const Window xwin = gdk_x11_surface_get_xid(surface);
+    if (!xdisplay || xwin == None) return;
+
+    const Atom wm_state = XInternAtom(xdisplay, "_NET_WM_STATE", False);
+    const Atom skip_tb = XInternAtom(xdisplay, "_NET_WM_STATE_SKIP_TASKBAR", False);
+    const Atom skip_pg = XInternAtom(xdisplay, "_NET_WM_STATE_SKIP_PAGER", False);
+    if (wm_state == None || skip_tb == None || skip_pg == None) return;
+
+    if (gtk_widget_get_mapped(GTK_WIDGET(win)) == FALSE) {
+        bool has_tb = false;
+        bool has_pg = false;
+        Atom actual_type = None;
+        int actual_format = 0;
+        unsigned long nitems = 0;
+        unsigned long bytes_after = 0;
+        unsigned char* prop = nullptr;
+        if (XGetWindowProperty(xdisplay, xwin, wm_state, 0, 64, False, XA_ATOM,
+                               &actual_type, &actual_format, &nitems, &bytes_after, &prop) == Success &&
+            prop) {
+            if (actual_type == XA_ATOM && actual_format == 32) {
+                const Atom* atoms = reinterpret_cast<const Atom*>(prop);
+                for (unsigned long k = 0; k < nitems; ++k) {
+                    if (atoms[k] == skip_tb) has_tb = true;
+                    if (atoms[k] == skip_pg) has_pg = true;
+                }
+            }
+            XFree(prop);
+        }
+        Atom add[2];
+        int n_add = 0;
+        if (!has_tb) add[n_add++] = skip_tb;
+        if (!has_pg) add[n_add++] = skip_pg;
+        if (n_add > 0) {
+            XChangeProperty(xdisplay, xwin, wm_state, XA_ATOM, 32, PropModeAppend,
+                            reinterpret_cast<const unsigned char*>(add), n_add);
+        }
+    }
+
+    XEvent ev{};
+    ev.xclient.type = ClientMessage;
+    ev.xclient.serial = 0;
+    ev.xclient.send_event = True;
+    ev.xclient.message_type = wm_state;
+    ev.xclient.window = xwin;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = 1; // _NET_WM_STATE_ADD
+    ev.xclient.data.l[1] = static_cast<long>(skip_tb);
+    ev.xclient.data.l[2] = static_cast<long>(skip_pg);
+    ev.xclient.data.l[3] = 1; // source indication: normal app
+    ev.xclient.data.l[4] = 0;
+
+    const Window root = DefaultRootWindow(xdisplay);
+    XSendEvent(xdisplay, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(xdisplay);
+#else
+    (void)win;
+#endif
+}
+
 void SessionWindow::release_all_grabs_immediately() {
     release_all_pane_keys();
     if (input_) {
-        input_->set_fullscreen(false);
         input_->force_grab(false);
     }
     for (const auto& pane : secondary_panes_) {
         if (pane && pane->input) {
-            pane->input->set_fullscreen(false);
             pane->input->force_grab(false);
         }
     }
@@ -780,6 +861,9 @@ void SessionWindow::start_rdp_session() {
     icb.on_focus_changed = [this](bool focused) {
         on_pane_focus_changed(GTK_WINDOW(window_), focused);
     };
+    icb.on_pointer_pressed = [this]() {
+        on_pane_pointer_pressed(GTK_WINDOW(window_));
+    };
     icb.on_toggle_grab_requested = [this]() {
         toggle_coordinated_grab();
     };
@@ -919,6 +1003,11 @@ void SessionWindow::apply_fullscreen_state(bool enter) {
 }
 
 void SessionWindow::destroy_secondary_panes() {
+    if (group_raise_guard_timer_id_ != 0) {
+        g_source_remove(group_raise_guard_timer_id_);
+        group_raise_guard_timer_id_ = 0;
+    }
+    raising_group_ = false;
     for (auto& pane : secondary_panes_) {
         if (!pane) continue;
         detach_surface_monitor_guard(pane->bound_surface, pane->enter_handler);
@@ -1034,6 +1123,9 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
             icb.on_focus_changed = [this, wptr = pane->window](bool focused) {
                 on_pane_focus_changed(wptr, focused);
             };
+            icb.on_pointer_pressed = [this, wptr = pane->window]() {
+                on_pane_pointer_pressed(wptr);
+            };
             icb.on_toggle_grab_requested = [this]() {
                 toggle_coordinated_grab();
             };
@@ -1070,12 +1162,29 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
                 }),
                 this);
 
+            g_signal_connect(
+                pane->window,
+                "realize",
+                G_CALLBACK(+[](GtkWidget* w, gpointer) {
+                    SessionWindow::apply_skip_taskbar_hint(GTK_WINDOW(w));
+                }),
+                nullptr);
+
+            g_signal_connect(
+                pane->window,
+                "map",
+                G_CALLBACK(+[](GtkWidget* w, gpointer) {
+                    SessionWindow::apply_skip_taskbar_hint(GTK_WINDOW(w));
+                }),
+                nullptr);
+
             // Connected by `this` or `pane.get()`; destroy callback clears pointers safely
             g_signal_connect(
                 pane->window,
                 "notify::fullscreened",
-                G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+                G_CALLBACK(+[](GObject* obj, GParamSpec*, gpointer data) {
                     auto* self = static_cast<SessionWindow*>(data);
+                    SessionWindow::apply_skip_taskbar_hint(GTK_WINDOW(obj));
                     self->sync_coordinated_grab();
                 }),
                 this);
@@ -1121,6 +1230,7 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
                 gtk_window_fullscreen(pane->window);
             }
             gtk_window_present(pane->window);
+            apply_skip_taskbar_hint(pane->window);
             attach_surface_monitor_guard(pane->window, pane->bound_surface, pane->enter_handler);
             secondary_panes_.push_back(std::move(pane));
         }
@@ -1129,6 +1239,7 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         sync_css_flag(hdr_multimon_btn_, "winrdp-hdr-active", true);
         gtk_window_present(GTK_WINDOW(window_));
         last_focused_window_ = GTK_WINDOW(window_);
+        session_had_focus_ = true;
         if (canvas_) gtk_widget_grab_focus(canvas_->widget());
         sync_coordinated_grab();
         return;
@@ -1161,6 +1272,9 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         gtk_window_present(GTK_WINDOW(window_));
     } else {
         release_all_grabs_immediately();
+        if (input_) {
+            input_->set_fullscreen(false);
+        }
         is_fullscreen_ = false;
         update_window_chrome();
 
@@ -1221,6 +1335,149 @@ void SessionWindow::release_all_pane_keys() {
     }
 }
 
+GtkWindow* SessionWindow::find_focused_pane() const {
+    if (window_ &&
+        ((input_ && input_->has_focus()) || gtk_window_is_active(GTK_WINDOW(window_)) == TRUE)) {
+        return GTK_WINDOW(window_);
+    }
+    for (const auto& pane : secondary_panes_) {
+        if (pane && pane->window &&
+            ((pane->input && pane->input->has_focus()) || gtk_window_is_active(pane->window) == TRUE)) {
+            return pane->window;
+        }
+    }
+    return nullptr;
+}
+
+void SessionWindow::on_pane_pointer_pressed(GtkWindow* win) {
+    if (!win || closing_) return;
+    if (is_multimon_active_ && !session_had_focus_ && !raising_group_) {
+        session_had_focus_ = true;
+        last_focused_window_ = win;
+        raise_sibling_panes(win);
+    }
+}
+
+void SessionWindow::raise_sibling_panes(GtkWindow* active_win) {
+    if (closing_ || !is_multimon_active_ || !window_ || raising_group_) return;
+
+    const uint64_t now = steady_ms_now();
+    if (now - last_group_raise_ms_ < 200) {
+        return;
+    }
+    last_group_raise_ms_ = now;
+    raising_group_ = true;
+
+    bool need_refocus_active = false;
+    auto raise_one = [&](GtkWindow* other) {
+        if (!other || other == active_win) return;
+        GdkSurface* s = gtk_native_get_surface(GTK_NATIVE(other));
+        bool minimized = false;
+        if (s && GDK_IS_TOPLEVEL(s)) {
+            minimized = (gdk_toplevel_get_state(GDK_TOPLEVEL(s)) & GDK_TOPLEVEL_STATE_MINIMIZED) != 0;
+        }
+        if (!minimized) {
+#ifdef GDK_WINDOWING_X11
+            if (s && GDK_IS_X11_SURFACE(s)) {
+                GdkDisplay* dpy = gdk_surface_get_display(s);
+                Display* xdpy = dpy ? gdk_x11_display_get_xdisplay(dpy) : nullptr;
+                const Window xw = gdk_x11_surface_get_xid(s);
+                if (xdpy && xw != None) {
+                    XMapRaised(xdpy, xw);
+                    XFlush(xdpy);
+                    return;
+                }
+            }
+#endif
+        }
+        gtk_window_present(other);
+        need_refocus_active = true;
+    };
+
+    raise_one(GTK_WINDOW(window_));
+    for (const auto& pane : secondary_panes_) {
+        if (pane && pane->window) {
+            raise_one(pane->window);
+        }
+    }
+    if (need_refocus_active && active_win) {
+        gtk_window_present(active_win);
+    }
+
+    if (group_raise_guard_timer_id_ != 0) {
+        g_source_remove(group_raise_guard_timer_id_);
+    }
+    group_raise_guard_timer_id_ = g_timeout_add(
+        200,
+        +[](gpointer data) -> gboolean {
+            auto* self = static_cast<SessionWindow*>(data);
+            self->group_raise_guard_timer_id_ = 0;
+            self->raising_group_ = false;
+            if (self->closing_) return G_SOURCE_REMOVE;
+
+            GtkWindow* focused_win = self->find_focused_pane();
+            if (focused_win) {
+                self->session_had_focus_ = true;
+                self->last_focused_window_ = focused_win;
+            } else {
+                self->session_had_focus_ = false;
+                self->last_focused_window_ = nullptr;
+                self->release_all_pane_keys();
+            }
+            self->sync_coordinated_grab();
+            return G_SOURCE_REMOVE;
+        },
+        this);
+}
+
+void SessionWindow::attach_primary_state_observer(GdkSurface* surface) {
+    detach_primary_state_observer();
+    if (!surface || !GDK_IS_TOPLEVEL(surface)) return;
+    primary_state_surface_ = surface;
+    primary_was_minimized_ =
+        (gdk_toplevel_get_state(GDK_TOPLEVEL(surface)) & GDK_TOPLEVEL_STATE_MINIMIZED) != 0;
+    primary_state_handler_ = g_signal_connect(
+        surface,
+        "notify::state",
+        G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
+            static_cast<SessionWindow*>(data)->on_primary_toplevel_state_changed();
+        }),
+        this);
+}
+
+void SessionWindow::detach_primary_state_observer() {
+    if (primary_state_surface_ && primary_state_handler_ != 0) {
+        g_signal_handler_disconnect(primary_state_surface_, primary_state_handler_);
+    }
+    primary_state_surface_ = nullptr;
+    primary_state_handler_ = 0;
+    primary_was_minimized_ = false;
+}
+
+void SessionWindow::on_primary_toplevel_state_changed() {
+    if (!primary_state_surface_ || !GDK_IS_TOPLEVEL(primary_state_surface_)) return;
+    const bool minimized =
+        (gdk_toplevel_get_state(GDK_TOPLEVEL(primary_state_surface_)) & GDK_TOPLEVEL_STATE_MINIMIZED) != 0;
+    if (minimized == primary_was_minimized_) return;
+    primary_was_minimized_ = minimized;
+    if (!is_multimon_active_ || closing_) return;
+
+    if (minimized) {
+        session_had_focus_ = false;
+        release_all_grabs_immediately();
+        for (const auto& pane : secondary_panes_) {
+            if (pane && pane->window) {
+                gtk_window_minimize(pane->window);
+            }
+        }
+    } else {
+        session_had_focus_ = true;
+        if (window_) {
+            raise_sibling_panes(GTK_WINDOW(window_));
+        }
+    }
+}
+
 void SessionWindow::on_pane_active_changed(GtkWindow* win) {
     if (!win || closing_) return;
     if (gtk_window_is_active(win) == TRUE) {
@@ -1228,6 +1485,8 @@ void SessionWindow::on_pane_active_changed(GtkWindow* win) {
             g_source_remove(focus_leave_timer_id_);
             focus_leave_timer_id_ = 0;
         }
+        const bool returning_from_external = !session_had_focus_;
+        session_had_focus_ = true;
         last_focused_window_ = win;
         if (win == GTK_WINDOW(window_) && canvas_) {
             gtk_widget_grab_focus(canvas_->widget());
@@ -1238,6 +1497,9 @@ void SessionWindow::on_pane_active_changed(GtkWindow* win) {
                     break;
                 }
             }
+        }
+        if (is_multimon_active_ && returning_from_external && !raising_group_) {
+            raise_sibling_panes(win);
         }
         sync_coordinated_grab();
     } else {
@@ -1251,8 +1513,17 @@ void SessionWindow::on_pane_focus_changed(GtkWindow* win, bool focused) {
             g_source_remove(focus_leave_timer_id_);
             focus_leave_timer_id_ = 0;
         }
+        const bool returning_from_external = !session_had_focus_;
+        session_had_focus_ = true;
         last_focused_window_ = win;
+        if (is_multimon_active_ && returning_from_external && !raising_group_) {
+            raise_sibling_panes(win);
+        }
         sync_coordinated_grab();
+        return;
+    }
+
+    if (raising_group_) {
         return;
     }
 
@@ -1262,6 +1533,7 @@ void SessionWindow::on_pane_focus_changed(GtkWindow* win, bool focused) {
     }
 
     if (!is_multimon_active_) {
+        session_had_focus_ = false;
         last_focused_window_ = nullptr;
         release_all_pane_keys();
         sync_coordinated_grab();
@@ -1274,26 +1546,13 @@ void SessionWindow::on_pane_focus_changed(GtkWindow* win, bool focused) {
             auto* self = static_cast<SessionWindow*>(data);
             self->focus_leave_timer_id_ = 0;
 
-            GtkWindow* focused_win = nullptr;
-            if (self->window_ &&
-                ((self->input_ && self->input_->has_focus()) ||
-                 gtk_window_is_active(GTK_WINDOW(self->window_)) == TRUE)) {
-                focused_win = GTK_WINDOW(self->window_);
-            } else {
-                for (const auto& pane : self->secondary_panes_) {
-                    if (pane && pane->window &&
-                        ((pane->input && pane->input->has_focus()) ||
-                         gtk_window_is_active(pane->window) == TRUE)) {
-                        focused_win = pane->window;
-                        break;
-                    }
-                }
-            }
-
+            GtkWindow* focused_win = self->find_focused_pane();
             if (focused_win) {
+                self->session_had_focus_ = true;
                 self->last_focused_window_ = focused_win;
                 self->sync_coordinated_grab();
             } else {
+                self->session_had_focus_ = false;
                 self->last_focused_window_ = nullptr;
                 self->release_all_pane_keys();
                 self->sync_coordinated_grab();

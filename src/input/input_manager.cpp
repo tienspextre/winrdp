@@ -383,6 +383,9 @@ gboolean InputManager::on_legacy_event(GtkEventControllerLegacy* /*ctrl*/,
     const guint btn = gdk_button_event_get_button(event);
     if (et == GDK_BUTTON_PRESS) {
         gtk_widget_grab_focus(self->canvas_->widget());
+        if (self->callbacks_.on_pointer_pressed) {
+            self->callbacks_.on_pointer_pressed();
+        }
         if (!self->session_) return TRUE;
         int rx = 0, ry = 0;
         if (!self->map_coords(wx, wy, rx, ry)) return TRUE;

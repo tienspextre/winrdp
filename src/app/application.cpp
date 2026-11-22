@@ -6,6 +6,12 @@
 #include "rdp/framebuffer.hpp"
 #include "rdp/rdp_session.hpp"
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/x11/gdkx.h>
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#endif
+
 #include <unistd.h>
 
 #include <algorithm>
@@ -24,7 +30,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.1.2"
+#define WINRDP_VERSION "1.1.3"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -327,11 +333,54 @@ int Application::run_smoke_test() {
     sess_win->connection_bar().set_mode(ConnectionBarMode::AutoHide);
 
     sess_win->present();
+    gtk_widget_realize(GTK_WIDGET(sec_win));
+    SessionWindow::apply_skip_taskbar_hint(GTK_WINDOW(sec_win));
     gtk_window_present(GTK_WINDOW(sec_win));
+    SessionWindow::apply_skip_taskbar_hint(GTK_WINDOW(sec_win));
     sess_win->canvas().request_redraw();
     right_canvas->request_redraw();
 
-    // Pump GLib main context until both primary & secondary GtkGLAreas render >= 1 pass (max 2s)
+    auto has_skip_taskbar = [](GtkWindow* win) -> bool {
+#ifdef GDK_WINDOWING_X11
+        GdkSurface* surface = win ? gtk_native_get_surface(GTK_NATIVE(win)) : nullptr;
+        if (!surface || !GDK_IS_X11_SURFACE(surface)) {
+            return true; // Non-X11 (e.g., Wayland): EWMH check not applicable
+        }
+        GdkDisplay* display = gdk_surface_get_display(surface);
+        Display* xdisplay = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
+        const Window xwin = gdk_x11_surface_get_xid(surface);
+        if (!xdisplay || xwin == None) return false;
+        const Atom wm_state = XInternAtom(xdisplay, "_NET_WM_STATE", False);
+        const Atom skip_tb = XInternAtom(xdisplay, "_NET_WM_STATE_SKIP_TASKBAR", False);
+        if (wm_state == None || skip_tb == None) return false;
+        Atom actual_type = None;
+        int actual_format = 0;
+        unsigned long nitems = 0;
+        unsigned long bytes_after = 0;
+        unsigned char* prop = nullptr;
+        bool found = false;
+        if (XGetWindowProperty(xdisplay, xwin, wm_state, 0, 64, False, XA_ATOM,
+                               &actual_type, &actual_format, &nitems, &bytes_after, &prop) == Success &&
+            prop) {
+            if (actual_type == XA_ATOM && actual_format == 32) {
+                const Atom* atoms = reinterpret_cast<const Atom*>(prop);
+                for (unsigned long i = 0; i < nitems; ++i) {
+                    if (atoms[i] == skip_tb) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            XFree(prop);
+        }
+        return found;
+#else
+        (void)win;
+        return true;
+#endif
+    };
+
+    // Pump GLib main context until both primary & secondary GtkGLAreas render >= 1 pass and WM sets state (max 2s)
     GMainContext* ctx = g_main_context_default();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -341,7 +390,8 @@ int Application::run_smoke_test() {
         if (sess_win->canvas().gl_initialized() &&
             sess_win->canvas().dirty_upload_count() >= 1 &&
             right_canvas->gl_initialized() &&
-            right_canvas->dirty_upload_count() >= 1) {
+            right_canvas->dirty_upload_count() >= 1 &&
+            has_skip_taskbar(GTK_WINDOW(sec_win))) {
             break;
         }
         g_usleep(10000);
@@ -356,6 +406,7 @@ int Application::run_smoke_test() {
                                 right_canvas->last_gl_error() == 0 &&
                                 right_canvas->dirty_upload_count() >= 1 &&
                                 map_ok;
+    const bool skip_taskbar_ok = has_skip_taskbar(GTK_WINDOW(sec_win));
     const bool mgr_ok = gtk_widget_get_realized(GTK_WIDGET(manager_->gtk_window())) == TRUE;
     const bool header_ok = sess_win->is_header_bar_visible() && sess_win->header_bar_height() > 0;
     const char* prgname = g_get_prgname();
@@ -378,6 +429,7 @@ int Application::run_smoke_test() {
               << " (glGetError=" << sess_win->canvas().last_gl_error() << ")\n";
     std::cout << "Multi-monitor dual-canvas GL (uploads=" << right_canvas->dirty_upload_count()
               << ", map_rx=" << rx << "): " << (multimon_gl_ok ? "OK" : "FAIL") << "\n";
+    std::cout << "Secondary pane skip-taskbar hint: " << (skip_taskbar_ok ? "OK" : "FAIL") << "\n";
     std::cout << "ConnectionBar overlay modes (Pinned=" << pinned_ok
               << ", Hidden=" << hidden_ok << "): " << ((pinned_ok && hidden_ok) ? "OK" : "FAIL") << "\n";
     std::cout << "Windowed HeaderBar (visible=" << sess_win->is_header_bar_visible()
@@ -395,8 +447,8 @@ int Application::run_smoke_test() {
     g_object_unref(app_);
     app_ = nullptr;
 
-    if (!gl_ok || !multimon_gl_ok || !pinned_ok || !hidden_ok || !header_ok || !identity_ok || !mgr_ok ||
-        !RdpSession::has_h264_hwaccel_support()) {
+    if (!gl_ok || !multimon_gl_ok || !skip_taskbar_ok || !pinned_ok || !hidden_ok || !header_ok ||
+        !identity_ok || !mgr_ok || !RdpSession::has_h264_hwaccel_support()) {
         std::cerr << "SMOKE_TEST_FAIL\n";
         return 1;
     }

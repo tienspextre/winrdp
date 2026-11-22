@@ -19,6 +19,7 @@ struct InputCallbacks {
     std::function<void()> on_toggle_multimon;
     std::function<void(bool grabbed)> on_grab_changed;
     std::function<void(bool focused)> on_focus_changed;
+    std::function<void()> on_pointer_pressed;
     std::function<void()> on_toggle_grab_requested;
     std::function<bool(double wx, double wy, int& out_rx, int& out_ry)> map_pointer;
 };
