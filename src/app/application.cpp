@@ -30,7 +30,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.1.3"
+#define WINRDP_VERSION "1.1.4"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(

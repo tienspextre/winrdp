@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(winrdp VERSION 1.1.3 LANGUAGES CXX)
+project(winrdp VERSION 1.1.4 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
