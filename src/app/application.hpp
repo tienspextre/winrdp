@@ -16,10 +16,13 @@ namespace winrdp {
 struct CliOptions {
     bool show_version = false;
     bool smoke_test = false;
+    bool list_monitors = false;
     bool force_fullscreen = false;
     bool force_windowed = false;
+    bool force_multimon = false;
     bool force_no_bar = false;
     bool force_pinned_bar = false;
+    std::vector<int32_t> selected_monitors;
     std::string target; // .rdp path, rdp:// URI, or host
 };
 

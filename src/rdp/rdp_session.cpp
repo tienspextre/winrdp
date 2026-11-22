@@ -105,11 +105,18 @@ RdpSession::RdpSession(ConnectionProfile profile,
       monitors_(std::move(monitors)),
       callbacks_(std::move(callbacks)) {
     if (monitors_.empty()) {
-        monitors_.push_back(MonitorInfo{0, 0, static_cast<int32_t>(profile_.width),
-                                        static_cast<int32_t>(profile_.height), 0, 0, 1, true});
+        MonitorInfo fallback;
+        fallback.index = 0;
+        fallback.logical_width = static_cast<int32_t>(profile_.width);
+        fallback.logical_height = static_cast<int32_t>(profile_.height);
+        fallback.width = static_cast<int32_t>(profile_.width);
+        fallback.height = static_cast<int32_t>(profile_.height);
+        fallback.is_primary = true;
+        monitors_.push_back(std::move(fallback));
     }
     telemetry_.width = profile_.width;
     telemetry_.height = profile_.height;
+    telemetry_.monitor_count = 1;
     telemetry_.hw_accel = profile_.hardware_decode && has_h264_hwaccel_support();
 }
 
@@ -261,10 +268,13 @@ bool RdpSession::configure_settings() {
     }
 
     // Display & Monitors
-    const bool is_multimon = (profile_.display_mode == DisplayMode::MultiMonitor && monitors_.size() > 1);
+    auto selected = filter_selected_monitors(monitors_, profile_.selected_monitors);
+    const bool is_multimon = (profile_.display_mode == DisplayMode::MultiMonitor && selected.size() > 1);
     const bool is_fs = (profile_.display_mode != DisplayMode::Windowed);
     ok &= freerdp_settings_set_bool(s, FreeRDP_Fullscreen, is_fs ? TRUE : FALSE) == TRUE;
     ok &= freerdp_settings_set_bool(s, FreeRDP_UseMultimon, is_multimon ? TRUE : FALSE) == TRUE;
+    ok &= freerdp_settings_set_bool(s, FreeRDP_SupportMonitorLayoutPdu, is_multimon ? TRUE : FALSE) == TRUE;
+    ok &= freerdp_settings_set_bool(s, FreeRDP_SpanMonitors, FALSE) == TRUE;
     ok &= freerdp_settings_set_bool(s, FreeRDP_SmartSizing, profile_.smart_sizing ? TRUE : FALSE) == TRUE;
     ok &= freerdp_settings_set_bool(s, FreeRDP_DynamicResolutionUpdate,
                                     profile_.dynamic_resolution ? TRUE : FALSE) == TRUE;
@@ -273,18 +283,35 @@ bool RdpSession::configure_settings() {
     uint32_t desktop_w = std::clamp<uint32_t>(profile_.width & ~1U, 320, 8192);
     uint32_t desktop_h = std::clamp<uint32_t>(profile_.height & ~1U, 200, 8192);
 
+    VirtualDesktopLayout layout;
     if (is_multimon) {
-        auto rdp_mons = build_freerdp_monitors(monitors_, profile_.scale_factor);
-        ok &= freerdp_settings_set_monitor_def_array_sorted(s, rdp_mons.data(), rdp_mons.size()) == TRUE;
-        int32_t min_x = INT32_MAX, min_y = INT32_MAX, max_x = INT32_MIN, max_y = INT32_MIN;
-        for (const auto& rm : rdp_mons) {
-            min_x = std::min(min_x, rm.x);
-            min_y = std::min(min_y, rm.y);
-            max_x = std::max(max_x, rm.x + rm.width);
-            max_y = std::max(max_y, rm.y + rm.height);
-        }
-        desktop_w = static_cast<uint32_t>(std::max(320, max_x - min_x));
-        desktop_h = static_cast<uint32_t>(std::max(200, max_y - min_y));
+        layout = compute_virtual_desktop_layout(selected, profile_.scale_factor);
+        ok &= freerdp_settings_set_monitor_def_array_sorted(
+            s, layout.rdp_monitors.data(), layout.rdp_monitors.size()) == TRUE;
+        desktop_w = std::clamp<uint32_t>(layout.desktop_width & ~1U, 320, 16384);
+        desktop_h = std::clamp<uint32_t>(layout.desktop_height & ~1U, 200, 16384);
+    } else {
+        MonitorInfo single = !selected.empty() ? selected[0] : monitors_[0];
+        single.x = 0;
+        single.y = 0;
+        single.logical_x = 0;
+        single.logical_y = 0;
+        single.width = static_cast<int32_t>(desktop_w);
+        single.height = static_cast<int32_t>(desktop_h);
+        single.logical_width = static_cast<int32_t>(desktop_w);
+        single.logical_height = static_cast<int32_t>(desktop_h);
+        single.is_primary = true;
+        layout = compute_virtual_desktop_layout({single}, profile_.scale_factor);
+    }
+    {
+        std::lock_guard<std::mutex> llock(layout_mutex_);
+        active_layout_ = layout;
+    }
+    {
+        std::lock_guard<std::mutex> tlock(telemetry_mutex_);
+        telemetry_.width = desktop_w;
+        telemetry_.height = desktop_h;
+        telemetry_.monitor_count = static_cast<uint32_t>(std::max<size_t>(1, layout.viewports.size()));
     }
 
     ok &= freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth, desktop_w) == TRUE;
@@ -788,6 +815,11 @@ void RdpSession::update_telemetry(bool force_emit) {
     }
 }
 
+VirtualDesktopLayout RdpSession::active_layout() const {
+    std::lock_guard<std::mutex> lock(layout_mutex_);
+    return active_layout_;
+}
+
 SessionTelemetry RdpSession::telemetry() const {
     std::lock_guard<std::mutex> lock(telemetry_mutex_);
     return telemetry_;
@@ -861,13 +893,13 @@ void RdpSession::request_resize(uint32_t width, uint32_t height, uint32_t scale_
 
 void RdpSession::request_monitor_layout(const std::vector<MonitorInfo>& monitors, uint32_t scale_percent) {
     if (!is_connected() || monitors.empty()) return;
-    std::lock_guard<std::mutex> lock(channel_mutex_);
-    if (!disp_ || !disp_->SendMonitorLayout) return;
 
-    auto rdp_mons = build_freerdp_monitors(monitors, scale_percent);
+    auto layout = compute_virtual_desktop_layout(monitors, scale_percent);
+    if (layout.rdp_monitors.empty()) return;
+
     std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts;
-    layouts.reserve(rdp_mons.size());
-    for (const auto& rm : rdp_mons) {
+    layouts.reserve(layout.rdp_monitors.size());
+    for (const auto& rm : layout.rdp_monitors) {
         DISPLAY_CONTROL_MONITOR_LAYOUT l{};
         l.Flags = rm.is_primary ? DISPLAY_CONTROL_MONITOR_PRIMARY : 0;
         l.Left = rm.x;
@@ -876,20 +908,39 @@ void RdpSession::request_monitor_layout(const std::vector<MonitorInfo>& monitors
         l.Height = static_cast<UINT32>(std::clamp(rm.height & ~1, 200, 8192));
         l.PhysicalWidth = rm.attributes.physicalWidth;
         l.PhysicalHeight = rm.attributes.physicalHeight;
-        l.Orientation = ORIENTATION_LANDSCAPE;
-        l.DesktopScaleFactor = rm.attributes.desktopScaleFactor;
-        l.DeviceScaleFactor = rm.attributes.deviceScaleFactor;
+        l.Orientation = rm.attributes.orientation;
+        l.DesktopScaleFactor = std::clamp<UINT32>(rm.attributes.desktopScaleFactor, 100, 500);
+        l.DeviceScaleFactor = 100;
         layouts.push_back(l);
     }
 
-    if (layouts.size() == last_disp_layout_.size() &&
-        std::memcmp(layouts.data(), last_disp_layout_.data(),
-                    layouts.size() * sizeof(DISPLAY_CONTROL_MONITOR_LAYOUT)) == 0) {
-        return;
+    bool sent_ok = false;
+    {
+        std::lock_guard<std::mutex> lock(channel_mutex_);
+        if (!disp_ || !disp_->SendMonitorLayout) return;
+
+        if (layouts.size() == last_disp_layout_.size() &&
+            std::memcmp(layouts.data(), last_disp_layout_.data(),
+                        layouts.size() * sizeof(DISPLAY_CONTROL_MONITOR_LAYOUT)) == 0) {
+            return;
+        }
+
+        if (disp_->SendMonitorLayout(disp_, static_cast<UINT32>(layouts.size()), layouts.data()) == CHANNEL_RC_OK) {
+            last_disp_layout_ = std::move(layouts);
+            sent_ok = true;
+        }
     }
 
-    if (disp_->SendMonitorLayout(disp_, static_cast<UINT32>(layouts.size()), layouts.data()) == CHANNEL_RC_OK) {
-        last_disp_layout_ = std::move(layouts);
+    if (sent_ok) {
+        {
+            std::lock_guard<std::mutex> llock(layout_mutex_);
+            active_layout_ = layout;
+        }
+        {
+            std::lock_guard<std::mutex> tlock(telemetry_mutex_);
+            telemetry_.monitor_count = static_cast<uint32_t>(std::max<size_t>(1, layout.viewports.size()));
+        }
+        update_telemetry(true);
     }
 }
 

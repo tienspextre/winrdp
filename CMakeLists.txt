@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(winrdp VERSION 1.0.0 LANGUAGES CXX)
+project(winrdp VERSION 1.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -35,6 +35,7 @@ add_library(winrdp_core STATIC
     src/config/rdp_file.cpp
     src/config/keyring.cpp
     src/rdp/framebuffer.cpp
+    src/input/monitor_math.cpp
     src/input/scancode_map.cpp
 )
 
@@ -120,3 +121,4 @@ winrdp_add_test(test_rdp_file tests/test_rdp_file.cpp)
 winrdp_add_test(test_profile tests/test_profile.cpp)
 winrdp_add_test(test_framebuffer tests/test_framebuffer.cpp)
 winrdp_add_test(test_input_mapping tests/test_input_mapping.cpp)
+winrdp_add_test(test_monitor_layout tests/test_monitor_layout.cpp)

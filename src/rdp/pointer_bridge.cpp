@@ -15,13 +15,6 @@ struct WinRdpPointer {
     std::shared_ptr<CursorBitmap>* bitmap_holder;
 };
 
-struct CursorDispatch {
-    std::weak_ptr<void> alive_token;
-    std::shared_ptr<CursorBitmap> bitmap;
-    bool is_null = false;
-    bool is_default = false;
-};
-
 // Map from rdpContext* -> PointerBridge* (safe for multi-session support)
 std::mutex g_bridge_map_mutex;
 std::vector<std::pair<rdpContext*, PointerBridge*>> g_bridge_map;
@@ -67,6 +60,34 @@ GdkCursor* make_invisible_cursor() {
     return c;
 }
 
+GdkCursor* create_gdk_cursor(const std::shared_ptr<CursorBitmap>& bmp, bool is_null, bool is_default) {
+    if (is_default) {
+        return nullptr;
+    }
+    if (is_null) {
+        return make_invisible_cursor();
+    }
+    if (bmp && bmp->width > 0 && bmp->height > 0 && !bmp->bgra.empty()) {
+        const uint32_t cw = bmp->width;
+        const uint32_t ch = bmp->height;
+        GBytes* bytes = g_bytes_new(bmp->bgra.data(), bmp->bgra.size());
+        GdkTexture* tex = gdk_memory_texture_new(
+            static_cast<int>(cw),
+            static_cast<int>(ch),
+            GDK_MEMORY_B8G8R8A8,
+            bytes,
+            static_cast<gsize>(cw) * 4U);
+        g_bytes_unref(bytes);
+
+        const int hx = std::clamp(bmp->hotspot_x, 0, static_cast<int>(cw) - 1);
+        const int hy = std::clamp(bmp->hotspot_y, 0, static_cast<int>(ch) - 1);
+        GdkCursor* cursor = gdk_cursor_new_from_texture(tex, hx, hy, nullptr);
+        g_object_unref(tex);
+        return cursor;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 PointerBridge::~PointerBridge() {
@@ -75,14 +96,41 @@ PointerBridge::~PointerBridge() {
 }
 
 void PointerBridge::attach_widget(GtkWidget* widget) {
+    if (!widget) return;
+    bool need_apply_cached = false;
+    std::shared_ptr<CursorBitmap> bmp;
+    bool is_null = false;
+    bool is_default = true;
+    {
+        std::lock_guard<std::mutex> lock(token_->mutex);
+        if (std::find(token_->widgets.begin(), token_->widgets.end(), widget) == token_->widgets.end()) {
+            token_->widgets.push_back(widget);
+        }
+        token_->alive = true;
+        if (token_->has_last) {
+            need_apply_cached = true;
+            bmp = token_->last_bmp;
+            is_null = token_->last_is_null;
+            is_default = token_->last_is_default;
+        }
+    }
+    if (need_apply_cached) {
+        dispatch_cursor(std::move(bmp), is_null, is_default);
+    }
+}
+
+void PointerBridge::detach_widget(GtkWidget* widget) {
+    if (!widget) return;
     std::lock_guard<std::mutex> lock(token_->mutex);
-    token_->widget = widget;
-    token_->alive = true;
+    token_->widgets.erase(
+        std::remove(token_->widgets.begin(), token_->widgets.end(), widget),
+        token_->widgets.end());
+    token_->alive = !token_->widgets.empty();
 }
 
 void PointerBridge::detach_widget() {
     std::lock_guard<std::mutex> lock(token_->mutex);
-    token_->widget = nullptr;
+    token_->widgets.clear();
     token_->alive = false;
 }
 
@@ -114,6 +162,14 @@ bool PointerBridge::register_callbacks(rdpContext* context) {
 }
 
 void PointerBridge::dispatch_cursor(std::shared_ptr<CursorBitmap> bmp, bool is_null, bool is_default) {
+    {
+        std::lock_guard<std::mutex> lock(token_->mutex);
+        token_->has_last = true;
+        token_->last_bmp = bmp;
+        token_->last_is_null = is_null;
+        token_->last_is_default = is_default;
+    }
+
     struct IdleArg {
         std::shared_ptr<AliveToken> token;
         std::shared_ptr<CursorBitmap> bmp;
@@ -125,48 +181,42 @@ void PointerBridge::dispatch_cursor(std::shared_ptr<CursorBitmap> bmp, bool is_n
     g_idle_add(
         [](gpointer data) -> gboolean {
             std::unique_ptr<IdleArg> req(static_cast<IdleArg*>(data));
-            GtkWidget* w = nullptr;
+            std::vector<GtkWidget*> targets;
             {
                 std::lock_guard<std::mutex> lock(req->token->mutex);
-                if (!req->token->alive || !req->token->widget) {
+                if (!req->token->alive || req->token->widgets.empty()) {
                     return G_SOURCE_REMOVE;
                 }
-                w = req->token->widget;
-                if (!GTK_IS_WIDGET(w)) {
-                    return G_SOURCE_REMOVE;
+                for (GtkWidget* w : req->token->widgets) {
+                    if (w && GTK_IS_WIDGET(w)) {
+                        g_object_ref(w);
+                        targets.push_back(w);
+                    }
                 }
-                g_object_ref(w);
+            }
+
+            if (targets.empty()) {
+                return G_SOURCE_REMOVE;
             }
 
             if (req->is_default) {
-                gtk_widget_set_cursor(w, nullptr);
-            } else if (req->is_null) {
-                GdkCursor* hidden = make_invisible_cursor();
-                gtk_widget_set_cursor(w, hidden);
-                if (hidden) g_object_unref(hidden);
-            } else if (req->bmp && req->bmp->width > 0 && req->bmp->height > 0 && !req->bmp->bgra.empty()) {
-                const uint32_t cw = req->bmp->width;
-                const uint32_t ch = req->bmp->height;
-                GBytes* bytes = g_bytes_new(req->bmp->bgra.data(), req->bmp->bgra.size());
-                GdkTexture* tex = gdk_memory_texture_new(
-                    static_cast<int>(cw),
-                    static_cast<int>(ch),
-                    GDK_MEMORY_B8G8R8A8,
-                    bytes,
-                    static_cast<gsize>(cw) * 4U);
-                g_bytes_unref(bytes);
-
-                const int hx = std::clamp(req->bmp->hotspot_x, 0, static_cast<int>(cw) - 1);
-                const int hy = std::clamp(req->bmp->hotspot_y, 0, static_cast<int>(ch) - 1);
-                GdkCursor* cursor = gdk_cursor_new_from_texture(tex, hx, hy, nullptr);
-                g_object_unref(tex);
-                if (cursor) {
-                    gtk_widget_set_cursor(w, cursor);
-                    g_object_unref(cursor);
+                for (GtkWidget* w : targets) {
+                    gtk_widget_set_cursor(w, nullptr);
+                    g_object_unref(w);
                 }
+                return G_SOURCE_REMOVE;
             }
 
-            g_object_unref(w);
+            GdkCursor* cursor = create_gdk_cursor(req->bmp, req->is_null, req->is_default);
+            for (GtkWidget* w : targets) {
+                if (cursor || req->is_null) {
+                    gtk_widget_set_cursor(w, cursor);
+                }
+                g_object_unref(w);
+            }
+            if (cursor) {
+                g_object_unref(cursor);
+            }
             return G_SOURCE_REMOVE;
         },
         arg);

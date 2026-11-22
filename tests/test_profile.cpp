@@ -33,7 +33,8 @@ int main() {
     p1.username = "alice";
     p1.domain = "ACME";
     p1.runtime_password = "TOP_SECRET_SHOULD_NOT_BE_ON_DISK";
-    p1.display_mode = DisplayMode::Fullscreen;
+    p1.display_mode = DisplayMode::MultiMonitor;
+    p1.selected_monitors = {0, 2};
     p1.connection_bar_mode = ConnectionBarMode::Hidden;
     p1.codec = CodecMode::AVC444;
     p1.security = SecurityMode::NLA;
@@ -60,6 +61,9 @@ int main() {
     WINRDP_CHECK(loaded->group == "Work");
     WINRDP_CHECK(loaded->favorite == true);
     WINRDP_CHECK(loaded->port == 3391);
+    WINRDP_CHECK(loaded->display_mode == DisplayMode::MultiMonitor);
+    WINRDP_CHECK(loaded->selected_monitors.size() == 2 &&
+                 loaded->selected_monitors[0] == 0 && loaded->selected_monitors[1] == 2);
     WINRDP_CHECK(loaded->connection_bar_mode == ConnectionBarMode::Hidden);
     WINRDP_CHECK(loaded->codec == CodecMode::AVC444);
     WINRDP_CHECK(loaded->shared_folders.size() == 1);

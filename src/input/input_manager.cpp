@@ -80,12 +80,21 @@ void InputManager::set_user_grab_enabled(bool enabled) {
     if (user_grab_enabled_ == enabled) return;
     user_grab_enabled_ = enabled;
     refresh_grab();
-    if (callbacks_.on_grab_changed) {
+    if (!external_grab_control_ && callbacks_.on_grab_changed) {
         callbacks_.on_grab_changed(grabbed_);
     }
 }
 
+void InputManager::set_external_grab_control(bool external) {
+    external_grab_control_ = external;
+}
+
+void InputManager::force_grab(bool want_grab) {
+    apply_system_grab(want_grab);
+}
+
 void InputManager::refresh_grab() {
+    if (external_grab_control_) return;
     bool want = false;
     if (has_focus_ && !grab_suspended_ && user_grab_enabled_) {
         if (grab_mode_ == KeyboardGrabMode::AlwaysWhenFocused) {
@@ -214,8 +223,16 @@ bool InputManager::handle_local_shortcut(guint keyval, GdkModifierType state) {
         if (callbacks_.on_toggle_fullscreen) callbacks_.on_toggle_fullscreen();
         return true;
     }
+    if (keyval == GDK_KEY_m || keyval == GDK_KEY_M) {
+        if (callbacks_.on_toggle_multimon) callbacks_.on_toggle_multimon();
+        return true;
+    }
     if (keyval == GDK_KEY_g || keyval == GDK_KEY_G) {
-        set_user_grab_enabled(!user_grab_enabled_);
+        if (external_grab_control_ && callbacks_.on_toggle_grab_requested) {
+            callbacks_.on_toggle_grab_requested();
+        } else {
+            set_user_grab_enabled(!user_grab_enabled_);
+        }
         return true;
     }
     return false;
@@ -264,7 +281,11 @@ void InputManager::on_key_released(GtkEventControllerKey* /*ctrl*/,
     if (self->is_release_key(keyval, keycode) && self->release_key_armed_) {
         self->release_key_armed_ = false;
         if (self->grab_mode_ != KeyboardGrabMode::Never) {
-            self->set_user_grab_enabled(!self->user_grab_enabled_);
+            if (self->external_grab_control_ && self->callbacks_.on_toggle_grab_requested) {
+                self->callbacks_.on_toggle_grab_requested();
+            } else {
+                self->set_user_grab_enabled(!self->user_grab_enabled_);
+            }
         }
     } else {
         self->release_key_armed_ = false;
@@ -366,19 +387,29 @@ gboolean InputManager::on_scroll(GtkEventControllerScroll* /*ctrl*/,
 void InputManager::on_focus_enter(GtkEventControllerFocus* /*ctrl*/, gpointer user_data) {
     auto* self = static_cast<InputManager*>(user_data);
     self->has_focus_ = true;
-    self->refresh_grab();
+    if (!self->external_grab_control_) {
+        self->refresh_grab();
+    }
     if (self->session_) {
         const uint32_t locks = self->query_lock_sync_flags();
         self->session_->send_focus_in(static_cast<uint16_t>(locks));
         self->session_->send_sync_locks(locks);
+    }
+    if (self->callbacks_.on_focus_changed) {
+        self->callbacks_.on_focus_changed(true);
     }
 }
 
 void InputManager::on_focus_leave(GtkEventControllerFocus* /*ctrl*/, gpointer user_data) {
     auto* self = static_cast<InputManager*>(user_data);
     self->has_focus_ = false;
-    self->release_all_keys();
-    self->apply_system_grab(false);
+    if (!self->external_grab_control_) {
+        self->release_all_keys();
+        self->apply_system_grab(false);
+    }
+    if (self->callbacks_.on_focus_changed) {
+        self->callbacks_.on_focus_changed(false);
+    }
 }
 
 } // namespace winrdp

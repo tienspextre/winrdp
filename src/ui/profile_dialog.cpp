@@ -1,10 +1,12 @@
 #include "ui/profile_dialog.hpp"
 
 #include "config/keyring.hpp"
+#include "input/monitor_layout.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -39,6 +41,11 @@ struct ProfileDialogState {
     GtkWidget* smart_size_row = nullptr;
     GtkWidget* scale_row = nullptr;
     GtkWidget* bar_mode_row = nullptr;
+    std::vector<MonitorInfo> detected_monitors;
+    GtkWidget* mon_group = nullptr;
+    GtkWidget* use_all_mons_row = nullptr;
+    GtkWidget* target_mon_row = nullptr;
+    std::vector<std::pair<int32_t, GtkWidget*>> mon_switch_rows;
 
     // Resources
     GtkWidget* audio_row = nullptr;
@@ -162,6 +169,23 @@ ConnectionProfile collect_profile(ProfileDialogState* st) {
 
     p.connection_bar_mode = static_cast<ConnectionBarMode>(
         adw_combo_row_get_selected(ADW_COMBO_ROW(st->bar_mode_row)));
+
+    p.selected_monitors.clear();
+    if (p.display_mode == DisplayMode::MultiMonitor) {
+        const bool use_all = adw_switch_row_get_active(ADW_SWITCH_ROW(st->use_all_mons_row)) == TRUE;
+        if (!use_all) {
+            for (const auto& entry : st->mon_switch_rows) {
+                if (adw_switch_row_get_active(ADW_SWITCH_ROW(entry.second)) == TRUE) {
+                    p.selected_monitors.push_back(entry.first);
+                }
+            }
+        }
+    } else if (p.display_mode == DisplayMode::Fullscreen) {
+        const guint t_idx = adw_combo_row_get_selected(ADW_COMBO_ROW(st->target_mon_row));
+        if (t_idx > 0 && static_cast<size_t>(t_idx - 1) < st->detected_monitors.size()) {
+            p.selected_monitors.push_back(st->detected_monitors[t_idx - 1].index);
+        }
+    }
 
     p.audio_mode = static_cast<AudioMode>(adw_combo_row_get_selected(ADW_COMBO_ROW(st->audio_row)));
     p.mic_redirection = adw_switch_row_get_active(ADW_SWITCH_ROW(st->mic_row)) == TRUE;
@@ -320,7 +344,12 @@ void show_profile_dialog(GtkWindow* parent,
     GtkWidget* g2 = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(g2), "Display & Resolution");
 
-    const char* disp_modes[] = {"Fullscreen", "Windowed", "All Monitors (Multi-Monitor)", nullptr};
+    const char* disp_modes[] = {
+        "Fullscreen (Single Monitor)",
+        "Windowed",
+        "Multi-Monitor (Fullscreen)",
+        nullptr
+    };
     st->disp_mode_row = make_combo_row(
         "Display Mode", nullptr, disp_modes, static_cast<guint>(st->profile.display_mode));
 
@@ -387,6 +416,118 @@ void show_profile_dialog(GtkWindow* parent,
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->scale_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->bar_mode_row);
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(p2), ADW_PREFERENCES_GROUP(g2));
+
+    // Monitors sub-group
+    st->detected_monitors = query_local_monitors(gtk_widget_get_display(GTK_WIDGET(st->win)));
+    st->mon_group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(st->mon_group), "Monitors");
+    {
+        std::string desc = std::to_string(st->detected_monitors.size()) +
+                           (st->detected_monitors.size() == 1
+                                ? " display detected — connect another monitor to span across screens"
+                                : " displays detected");
+        adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(st->mon_group), desc.c_str());
+    }
+
+    st->use_all_mons_row = make_switch_row(
+        "Use All Connected Monitors",
+        "Automatically span Windows across every local display",
+        st->profile.selected_monitors.empty());
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(st->mon_group), st->use_all_mons_row);
+
+    std::vector<std::string> target_labels;
+    target_labels.emplace_back("Auto (Current / Primary)");
+    guint target_sel = 0;
+
+    for (size_t i = 0; i < st->detected_monitors.size(); ++i) {
+        const auto& m = st->detected_monitors[i];
+        const std::string label = format_monitor_label(m);
+        target_labels.push_back(label);
+        if (st->profile.selected_monitors.size() == 1 &&
+            st->profile.selected_monitors[0] == m.index) {
+            target_sel = static_cast<guint>(i + 1);
+        }
+
+        const bool checked = st->profile.selected_monitors.empty() ||
+                             (std::find(st->profile.selected_monitors.begin(),
+                                        st->profile.selected_monitors.end(),
+                                        m.index) != st->profile.selected_monitors.end());
+        std::string sub = std::to_string(m.width) + "x" + std::to_string(m.height) +
+                          " at (" + std::to_string(m.x) + ", " + std::to_string(m.y) + ")" +
+                          " • Scale " + std::to_string(m.scale_factor) + "x";
+        if (m.is_primary) {
+            sub += " • Primary";
+        }
+        GtkWidget* mrow = make_switch_row(label.c_str(), sub.c_str(), checked);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(st->mon_group), mrow);
+        st->mon_switch_rows.emplace_back(m.index, mrow);
+    }
+
+    std::vector<const char*> target_ptrs;
+    target_ptrs.reserve(target_labels.size() + 1);
+    for (const auto& s : target_labels) {
+        target_ptrs.push_back(s.c_str());
+    }
+    target_ptrs.push_back(nullptr);
+
+    st->target_mon_row = make_combo_row(
+        "Target Fullscreen Monitor",
+        "Display used when entering single-monitor fullscreen",
+        target_ptrs.data(),
+        target_sel);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(st->mon_group), st->target_mon_row);
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(p2), ADW_PREFERENCES_GROUP(st->mon_group));
+
+    auto update_monitor_visibility = +[](ProfileDialogState* s) {
+        const auto mode = static_cast<DisplayMode>(
+            adw_combo_row_get_selected(ADW_COMBO_ROW(s->disp_mode_row)));
+        const bool is_multimon = (mode == DisplayMode::MultiMonitor);
+        const bool is_fs = (mode == DisplayMode::Fullscreen);
+        const bool use_all = adw_switch_row_get_active(ADW_SWITCH_ROW(s->use_all_mons_row)) == TRUE;
+
+        gtk_widget_set_visible(s->mon_group, (is_multimon || is_fs) ? TRUE : FALSE);
+        gtk_widget_set_visible(s->use_all_mons_row, is_multimon ? TRUE : FALSE);
+        for (const auto& entry : s->mon_switch_rows) {
+            gtk_widget_set_visible(entry.second, (is_multimon && !use_all) ? TRUE : FALSE);
+        }
+        gtk_widget_set_visible(s->target_mon_row, is_fs ? TRUE : FALSE);
+    };
+
+    g_signal_connect(
+        st->disp_mode_row,
+        "notify::selected",
+        G_CALLBACK((+[](GObject*, GParamSpec*, gpointer data) {
+            auto* s = static_cast<ProfileDialogState*>(data);
+            const auto mode = static_cast<DisplayMode>(
+                adw_combo_row_get_selected(ADW_COMBO_ROW(s->disp_mode_row)));
+            const bool is_multimon = (mode == DisplayMode::MultiMonitor);
+            const bool is_fs = (mode == DisplayMode::Fullscreen);
+            const bool use_all = adw_switch_row_get_active(ADW_SWITCH_ROW(s->use_all_mons_row)) == TRUE;
+            gtk_widget_set_visible(s->mon_group, (is_multimon || is_fs) ? TRUE : FALSE);
+            gtk_widget_set_visible(s->use_all_mons_row, is_multimon ? TRUE : FALSE);
+            for (const auto& entry : s->mon_switch_rows) {
+                gtk_widget_set_visible(entry.second, (is_multimon && !use_all) ? TRUE : FALSE);
+            }
+            gtk_widget_set_visible(s->target_mon_row, is_fs ? TRUE : FALSE);
+        })),
+        st);
+
+    g_signal_connect(
+        st->use_all_mons_row,
+        "notify::active",
+        G_CALLBACK((+[](GObject*, GParamSpec*, gpointer data) {
+            auto* s = static_cast<ProfileDialogState*>(data);
+            const auto mode = static_cast<DisplayMode>(
+                adw_combo_row_get_selected(ADW_COMBO_ROW(s->disp_mode_row)));
+            const bool is_multimon = (mode == DisplayMode::MultiMonitor);
+            const bool use_all = adw_switch_row_get_active(ADW_SWITCH_ROW(s->use_all_mons_row)) == TRUE;
+            for (const auto& entry : s->mon_switch_rows) {
+                gtk_widget_set_visible(entry.second, (is_multimon && !use_all) ? TRUE : FALSE);
+            }
+        })),
+        st);
+
+    update_monitor_visibility(st);
 
     AdwViewStackPage* vp2 = adw_view_stack_add_titled(ADW_VIEW_STACK(stack), p2, "display", "Display");
     adw_view_stack_page_set_icon_name(vp2, "video-display-symbolic");

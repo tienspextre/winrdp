@@ -3,6 +3,7 @@
 #ifdef GDK_WINDOWING_X11
 #include <gdk/x11/gdkx.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
 #endif
 
 #include <algorithm>
@@ -16,15 +17,75 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
         display = gdk_display_get_default();
     }
     if (!display) {
-        result.push_back(MonitorInfo{0, 0, 1920, 1080, 520, 290, 1, true});
+        MonitorInfo fallback;
+        fallback.index = 0;
+        fallback.logical_width = 1920;
+        fallback.logical_height = 1080;
+        fallback.width = 1920;
+        fallback.height = 1080;
+        fallback.physical_width_mm = 520;
+        fallback.physical_height_mm = 290;
+        fallback.scale_factor = 1;
+        fallback.is_primary = true;
+        result.push_back(std::move(fallback));
         return result;
     }
 
     GListModel* list = gdk_display_get_monitors(display);
     if (!list) {
-        result.push_back(MonitorInfo{0, 0, 1920, 1080, 520, 290, 1, true});
+        MonitorInfo fallback;
+        fallback.index = 0;
+        fallback.logical_width = 1920;
+        fallback.logical_height = 1080;
+        fallback.width = 1920;
+        fallback.height = 1080;
+        fallback.physical_width_mm = 520;
+        fallback.physical_height_mm = 290;
+        fallback.scale_factor = 1;
+        fallback.is_primary = true;
+        result.push_back(std::move(fallback));
         return result;
     }
+
+#ifdef GDK_WINDOWING_X11
+    struct XrrMon {
+        std::string name;
+        int x = 0;
+        int y = 0;
+        int width = 0;
+        int height = 0;
+        int mwidth = 0;
+        int mheight = 0;
+        bool primary = false;
+    };
+    std::vector<XrrMon> xrr_monitors;
+    if (GDK_IS_X11_DISPLAY(display)) {
+        Display* xdisplay = gdk_x11_display_get_xdisplay(display);
+        if (xdisplay) {
+            int nrr = 0;
+            XRRMonitorInfo* rrm = XRRGetMonitors(xdisplay, DefaultRootWindow(xdisplay), True, &nrr);
+            if (rrm) {
+                for (int k = 0; k < nrr; ++k) {
+                    XrrMon xm;
+                    char* aname = XGetAtomName(xdisplay, rrm[k].name);
+                    if (aname) {
+                        xm.name = aname;
+                        XFree(aname);
+                    }
+                    xm.x = rrm[k].x;
+                    xm.y = rrm[k].y;
+                    xm.width = rrm[k].width;
+                    xm.height = rrm[k].height;
+                    xm.mwidth = rrm[k].mwidth;
+                    xm.mheight = rrm[k].mheight;
+                    xm.primary = (rrm[k].primary != 0);
+                    xrr_monitors.push_back(std::move(xm));
+                }
+                XRRFreeMonitors(rrm);
+            }
+        }
+    }
+#endif
 
     const guint n = g_list_model_get_n_items(list);
     for (guint i = 0; i < n; ++i) {
@@ -34,8 +95,22 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
         GdkRectangle geom{};
         gdk_monitor_get_geometry(mon, &geom);
         const int sf = std::max(1, gdk_monitor_get_scale_factor(mon));
+        const char* conn = gdk_monitor_get_connector(mon);
+        const char* desc = gdk_monitor_get_description(mon);
+        const char* model = gdk_monitor_get_model(mon);
 
         MonitorInfo info;
+        info.index = static_cast<int32_t>(i);
+        info.connector = conn ? conn : "";
+        if (desc && desc[0] != '\0') {
+            info.description = desc;
+        } else if (model && model[0] != '\0') {
+            info.description = model;
+        }
+        info.logical_x = geom.x;
+        info.logical_y = geom.y;
+        info.logical_width = std::max(1, geom.width);
+        info.logical_height = std::max(1, geom.height);
         info.x = geom.x * sf;
         info.y = geom.y * sf;
         info.width = std::max(320, geom.width * sf);
@@ -43,138 +118,123 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
         info.physical_width_mm = std::max(0, gdk_monitor_get_width_mm(mon));
         info.physical_height_mm = std::max(0, gdk_monitor_get_height_mm(mon));
         info.scale_factor = sf;
-        info.is_primary = (geom.x == 0 && geom.y == 0) || (i == 0);
+        info.is_primary = false;
 
-        result.push_back(info);
+#ifdef GDK_WINDOWING_X11
+        if (!xrr_monitors.empty()) {
+            const XrrMon* matched = nullptr;
+            if (!info.connector.empty()) {
+                for (const auto& xm : xrr_monitors) {
+                    if (xm.name == info.connector) {
+                        matched = &xm;
+                        break;
+                    }
+                }
+            }
+            if (!matched && i < xrr_monitors.size()) {
+                matched = &xrr_monitors[i];
+            }
+            if (matched) {
+                info.x = matched->x;
+                info.y = matched->y;
+                if (matched->width >= 320) info.width = matched->width;
+                if (matched->height >= 200) info.height = matched->height;
+                if (info.physical_width_mm == 0 && matched->mwidth > 0) {
+                    info.physical_width_mm = matched->mwidth;
+                }
+                if (info.physical_height_mm == 0 && matched->mheight > 0) {
+                    info.physical_height_mm = matched->mheight;
+                }
+                info.is_primary = matched->primary;
+            }
+        }
+#endif
+
+        result.push_back(std::move(info));
         g_object_unref(mon);
     }
 
     if (result.empty()) {
-        result.push_back(MonitorInfo{0, 0, 1920, 1080, 520, 290, 1, true});
+        MonitorInfo fallback;
+        fallback.index = 0;
+        fallback.logical_width = 1920;
+        fallback.logical_height = 1080;
+        fallback.width = 1920;
+        fallback.height = 1080;
+        fallback.physical_width_mm = 520;
+        fallback.physical_height_mm = 290;
+        fallback.scale_factor = 1;
+        fallback.is_primary = true;
+        result.push_back(std::move(fallback));
     } else {
-        // Ensure exactly one monitor is marked primary (prefer one at 0,0)
-        bool found_origin = false;
-        for (auto& m : result) {
-            if (m.x == 0 && m.y == 0) {
-                m.is_primary = true;
-                found_origin = true;
+        size_t prim = result.size();
+        for (size_t i = 0; i < result.size(); ++i) {
+            if (result[i].is_primary) {
+                prim = i;
                 break;
             }
-            m.is_primary = false;
         }
-        if (!found_origin) {
-            result[0].is_primary = true;
-        } else {
-            bool kept_one = false;
-            for (auto& m : result) {
-                if (m.is_primary && !kept_one) {
-                    kept_one = true;
-                } else {
-                    m.is_primary = false;
+        if (prim == result.size()) {
+            for (size_t i = 0; i < result.size(); ++i) {
+                if (result[i].logical_x == 0 && result[i].logical_y == 0) {
+                    prim = i;
+                    break;
                 }
             }
+        }
+        if (prim == result.size()) {
+            prim = 0;
+        }
+        for (size_t i = 0; i < result.size(); ++i) {
+            result[i].is_primary = (i == prim);
         }
     }
 
     return result;
 }
 
-std::vector<rdpMonitor> build_freerdp_monitors(const std::vector<MonitorInfo>& monitors,
-                                               uint32_t scale_percent_override) {
-    std::vector<rdpMonitor> out;
-    if (monitors.empty()) return out;
+GdkMonitor* find_gdk_monitor(GdkDisplay* display, const MonitorInfo& info) {
+    if (!display) {
+        display = gdk_display_get_default();
+    }
+    if (!display) return nullptr;
 
-    int32_t origin_x = monitors[0].x;
-    int32_t origin_y = monitors[0].y;
-    for (const auto& m : monitors) {
-        if (m.is_primary) {
-            origin_x = m.x;
-            origin_y = m.y;
-            break;
+    GListModel* list = gdk_display_get_monitors(display);
+    if (!list) return nullptr;
+    const guint n = g_list_model_get_n_items(list);
+    if (n == 0) return nullptr;
+
+    if (!info.connector.empty()) {
+        for (guint i = 0; i < n; ++i) {
+            GdkMonitor* mon = GDK_MONITOR(g_list_model_get_item(list, i));
+            if (!mon) continue;
+            const char* conn = gdk_monitor_get_connector(mon);
+            if (conn && info.connector == conn) {
+                return mon;
+            }
+            g_object_unref(mon);
         }
     }
 
-    out.reserve(monitors.size());
-    for (size_t i = 0; i < monitors.size(); ++i) {
-        const auto& m = monitors[i];
-        rdpMonitor rm{};
-        rm.x = m.x - origin_x;
-        rm.y = m.y - origin_y;
-        rm.width = m.width;
-        rm.height = m.height;
-        rm.is_primary = m.is_primary ? 1 : 0;
-        rm.orig_screen = static_cast<UINT32>(i);
-        rm.attributes.physicalWidth = static_cast<UINT32>(std::max(0, m.physical_width_mm));
-        rm.attributes.physicalHeight = static_cast<UINT32>(std::max(0, m.physical_height_mm));
-        rm.attributes.orientation = ORIENTATION_LANDSCAPE;
-        uint32_t dscale = scale_percent_override > 100
-                              ? scale_percent_override
-                              : static_cast<uint32_t>(std::max(1, m.scale_factor) * 100);
-        rm.attributes.desktopScaleFactor = dscale;
-        rm.attributes.deviceScaleFactor = 100;
-        out.push_back(rm);
-    }
-    return out;
-}
-
-void apply_x11_fullscreen_monitors(GtkWindow* window, bool enable_multimon) {
-#ifdef GDK_WINDOWING_X11
-    if (!window) return;
-    GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window));
-    if (!surface || !GDK_IS_X11_SURFACE(surface)) return;
-
-    GdkDisplay* display = gdk_surface_get_display(surface);
-    if (!display || !GDK_IS_X11_DISPLAY(display)) return;
-
-    Display* xdisplay = gdk_x11_display_get_xdisplay(display);
-    Window xwin = gdk_x11_surface_get_xid(surface);
-    if (!xdisplay || xwin == None) return;
-
-    Atom wm_fs_monitors = XInternAtom(xdisplay, "_NET_WM_FULLSCREEN_MONITORS", False);
-    Window root = DefaultRootWindow(xdisplay);
-
-    if (!enable_multimon) {
-        XDeleteProperty(xdisplay, xwin, wm_fs_monitors);
-        XFlush(xdisplay);
-        return;
+    if (info.index >= 0 && static_cast<guint>(info.index) < n) {
+        GdkMonitor* mon = GDK_MONITOR(g_list_model_get_item(list, static_cast<guint>(info.index)));
+        if (mon) {
+            return mon;
+        }
     }
 
-    GListModel* list = gdk_display_get_monitors(display);
-    if (!list) return;
-    const guint count = g_list_model_get_n_items(list);
-    if (count <= 1) return;
-
-    long top_idx = 0, bottom_idx = 0, left_idx = 0, right_idx = 0;
-    int min_x = INT32_MAX, max_x = INT32_MIN, min_y = INT32_MAX, max_y = INT32_MIN;
-
-    for (guint i = 0; i < count; ++i) {
+    for (guint i = 0; i < n; ++i) {
         GdkMonitor* mon = GDK_MONITOR(g_list_model_get_item(list, i));
         if (!mon) continue;
-        GdkRectangle g{};
-        gdk_monitor_get_geometry(mon, &g);
-        if (g.x < min_x) { min_x = g.x; left_idx = i; }
-        if (g.x + g.width > max_x) { max_x = g.x + g.width; right_idx = i; }
-        if (g.y < min_y) { min_y = g.y; top_idx = i; }
-        if (g.y + g.height > max_y) { max_y = g.y + g.height; bottom_idx = i; }
+        GdkRectangle geom{};
+        gdk_monitor_get_geometry(mon, &geom);
+        if (geom.x == info.logical_x && geom.y == info.logical_y) {
+            return mon;
+        }
         g_object_unref(mon);
     }
 
-    XEvent xev{};
-    xev.type = ClientMessage;
-    xev.xclient.window = xwin;
-    xev.xclient.message_type = wm_fs_monitors;
-    xev.xclient.format = 32;
-    xev.xclient.data.l[0] = top_idx;
-    xev.xclient.data.l[1] = bottom_idx;
-    xev.xclient.data.l[2] = left_idx;
-    xev.xclient.data.l[3] = right_idx;
-    xev.xclient.data.l[4] = 1; // source indication: application
-    XSendEvent(xdisplay, root, False, SubstructureNotifyMask | SubstructureRedirectMask, &xev);
-    XFlush(xdisplay);
-#else
-    (void)window;
-    (void)enable_multimon;
-#endif
+    return GDK_MONITOR(g_list_model_get_item(list, 0));
 }
 
 } // namespace winrdp

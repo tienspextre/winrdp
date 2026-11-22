@@ -160,6 +160,19 @@ bool ProfileStore::load() {
             p.dynamic_resolution = json_get_bool(item, "dynamic_resolution", true);
             p.smart_sizing = json_get_bool(item, "smart_sizing", false);
             p.scale_factor = json_get_u32(item, "scale_factor", 100);
+            const cJSON* sel_mons = cJSON_GetObjectItemCaseSensitive(item, "selected_monitors");
+            if (cJSON_IsArray(sel_mons)) {
+                const cJSON* sm = nullptr;
+                cJSON_ArrayForEach(sm, sel_mons) {
+                    if (cJSON_IsNumber(sm) && sm->valuedouble >= 0.0 && sm->valuedouble <= 63.0) {
+                        const int32_t midx = static_cast<int32_t>(sm->valuedouble);
+                        if (std::find(p.selected_monitors.begin(), p.selected_monitors.end(), midx) ==
+                            p.selected_monitors.end()) {
+                            p.selected_monitors.push_back(midx);
+                        }
+                    }
+                }
+            }
             p.connection_bar_mode = parse_bar_mode(json_get_str(item, "connection_bar_mode", "AutoHide"));
             p.bar_toggle_shortcut = json_get_str(item, "bar_toggle_shortcut", "Ctrl+Alt+Home");
             p.grab_release_key = json_get_str(item, "grab_release_key", "RightCtrl");
@@ -258,6 +271,10 @@ bool ProfileStore::save() const {
         cJSON_AddBoolToObject(o, "dynamic_resolution", prof.dynamic_resolution);
         cJSON_AddBoolToObject(o, "smart_sizing", prof.smart_sizing);
         cJSON_AddNumberToObject(o, "scale_factor", prof.scale_factor);
+        cJSON* sel_mons = cJSON_AddArrayToObject(o, "selected_monitors");
+        for (int32_t midx : prof.selected_monitors) {
+            cJSON_AddItemToArray(sel_mons, cJSON_CreateNumber(midx));
+        }
         cJSON_AddStringToObject(o, "connection_bar_mode", to_string(prof.connection_bar_mode));
         cJSON_AddStringToObject(o, "bar_toggle_shortcut", prof.bar_toggle_shortcut.c_str());
         cJSON_AddStringToObject(o, "grab_release_key", prof.grab_release_key.c_str());

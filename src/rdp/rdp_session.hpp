@@ -37,6 +37,7 @@ struct SessionTelemetry {
     std::string codec = "GDI";
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t monitor_count = 1;
     bool hw_accel = false;
     bool dynamic_resize_ready = false;
 };
@@ -95,6 +96,7 @@ public:
     ClipboardBridge& clipboard_bridge() { return clipboard_; }
 
     const ConnectionProfile& profile() const { return profile_; }
+    VirtualDesktopLayout active_layout() const;
     SessionState state() const { return state_.load(std::memory_order_acquire); }
     bool is_connected() const { return state() == SessionState::Connected; }
     SessionTelemetry telemetry() const;
@@ -158,6 +160,8 @@ private:
     ConnectionProfile profile_;
     std::vector<MonitorInfo> monitors_;
     SessionCallbacks callbacks_;
+    mutable std::mutex layout_mutex_;
+    VirtualDesktopLayout active_layout_;
 
     rdpContext* ctx_ = nullptr;
     std::thread worker_;

@@ -7,6 +7,7 @@ namespace winrdp {
 
 void Framebuffer::resize(uint32_t width, uint32_t height) {
     std::lock_guard<std::mutex> lock(mutex_);
+    dirty_history_.clear();
     if (width == 0 || height == 0) {
         pixels_.clear();
         width_val_ = 0;
@@ -33,6 +34,10 @@ void Framebuffer::resize(uint32_t width, uint32_t height) {
 
     ++resize_gen_val_;
     ++frame_gen_val_;
+    if (width_val_ > 0 && height_val_ > 0) {
+        dirty_history_.emplace_back(frame_gen_val_,
+                                    DirtyRect{0, 0, static_cast<int>(width_val_), static_cast<int>(height_val_)});
+    }
     width_.store(width_val_, std::memory_order_release);
     height_.store(height_val_, std::memory_order_release);
     resize_gen_.store(resize_gen_val_, std::memory_order_release);
@@ -58,6 +63,9 @@ void Framebuffer::clear(uint32_t bgra_color) {
     dirty_x2_ = static_cast<int>(width_val_);
     dirty_y2_ = static_cast<int>(height_val_);
     ++frame_gen_val_;
+    dirty_history_.clear();
+    dirty_history_.emplace_back(frame_gen_val_,
+                                DirtyRect{0, 0, static_cast<int>(width_val_), static_cast<int>(height_val_)});
     frame_gen_.store(frame_gen_val_, std::memory_order_release);
 }
 
@@ -105,6 +113,10 @@ void Framebuffer::update_region(const uint8_t* src, uint32_t src_stride, int x, 
     }
 
     ++frame_gen_val_;
+    dirty_history_.emplace_back(frame_gen_val_, DirtyRect{x1, y1, x2 - x1, y2 - y1});
+    while (dirty_history_.size() > kMaxDirtyHistory) {
+        dirty_history_.pop_front();
+    }
     frame_gen_.store(frame_gen_val_, std::memory_order_release);
 }
 

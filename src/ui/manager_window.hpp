@@ -53,6 +53,7 @@ private:
     AdwNavigationSplitView* split_ = nullptr;
     GtkListBox* sidebar_list_ = nullptr;
     GtkWidget* quick_entry_ = nullptr;
+    GtkWidget* quick_multimon_btn_ = nullptr;
     GtkWidget* search_bar_ = nullptr;
     GtkWidget* search_entry_ = nullptr;
     GtkWidget* stack_ = nullptr;

@@ -124,7 +124,12 @@ void ManagerWindow::setup_ui() {
     GtkWidget* quick_btn = gtk_button_new_with_label("Connect");
     gtk_widget_add_css_class(quick_btn, "suggested-action");
 
+    quick_multimon_btn_ = gtk_toggle_button_new();
+    gtk_button_set_icon_name(GTK_BUTTON(quick_multimon_btn_), "video-joined-displays-symbolic");
+    gtk_widget_set_tooltip_text(quick_multimon_btn_, "Quick Connect with Multi-Monitor");
+
     gtk_box_append(GTK_BOX(quick_box), quick_entry_);
+    gtk_box_append(GTK_BOX(quick_box), quick_multimon_btn_);
     gtk_box_append(GTK_BOX(quick_box), quick_btn);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), quick_box);
 
@@ -349,7 +354,15 @@ GtkWidget* ManagerWindow::build_connection_card(const ConnectionProfile& p) {
 
     // Tags row
     GtkWidget* tags = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    GtkWidget* mode_tag = gtk_label_new(to_string(p.display_mode));
+    std::string mode_label = to_string(p.display_mode);
+    if (p.display_mode == DisplayMode::MultiMonitor) {
+        if (p.selected_monitors.empty()) {
+            mode_label = "Multi-Mon";
+        } else {
+            mode_label = "Multi-Mon (" + std::to_string(p.selected_monitors.size()) + ")";
+        }
+    }
+    GtkWidget* mode_tag = gtk_label_new(mode_label.c_str());
     gtk_widget_add_css_class(mode_tag, "winrdp-pill-tag");
     GtkWidget* codec_tag = gtk_label_new(to_string(p.codec));
     gtk_widget_add_css_class(codec_tag, "winrdp-pill-tag");
@@ -469,6 +482,10 @@ void ManagerWindow::on_quick_connect_activated() {
     if (!parse_quick_connect_target(text, p)) {
         gtk_widget_grab_focus(quick_entry_);
         return;
+    }
+    if (quick_multimon_btn_ &&
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(quick_multimon_btn_)) == TRUE) {
+        p.display_mode = DisplayMode::MultiMonitor;
     }
     if (callbacks_.on_connect) callbacks_.on_connect(p);
 }

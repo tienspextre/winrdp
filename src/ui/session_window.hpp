@@ -2,6 +2,7 @@
 
 #include "config/profile.hpp"
 #include "input/input_manager.hpp"
+#include "input/monitor_math.hpp"
 #include "rdp/rdp_session.hpp"
 #include "render/gl_canvas.hpp"
 #include "ui/connection_bar.hpp"
@@ -12,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace winrdp {
 
@@ -38,6 +40,7 @@ public:
     GtkWindow* gtk_window() const { return GTK_WINDOW(window_); }
     GlCanvas& canvas() { return *canvas_; }
     ConnectionBar& connection_bar() { return *bar_; }
+    bool is_multimon_active() const { return is_multimon_active_; }
 
     void show_toast(const std::string& text, guint duration_ms = 1800);
 
@@ -46,13 +49,35 @@ private:
         bool valid = true;
     };
 
+    struct SecondaryMonitorPane {
+        GtkWindow* window = nullptr;
+        std::unique_ptr<GlCanvas> canvas;
+        std::unique_ptr<InputManager> input;
+        MonitorViewport viewport;
+    };
+
     void setup_ui();
     void start_rdp_session();
     void toggle_fullscreen();
+    void toggle_multimon();
     void apply_fullscreen_state(bool enter);
+    void sync_monitor_windows(const VirtualDesktopLayout& layout, bool enter_fullscreen);
+    void destroy_secondary_panes();
     void schedule_dynamic_resize(int pixel_w, int pixel_h);
     void update_status_banner(SessionState state, const std::string& msg, uint32_t attempt, uint32_t max_attempts);
 
+    void on_pane_focus_changed(GtkWindow* win, bool focused);
+    void toggle_coordinated_grab();
+    void suspend_coordinated_grab(bool suspend);
+    void sync_coordinated_grab();
+    void release_all_pane_keys();
+    InputManager* find_input_for_window(GtkWindow* win) const;
+
+    void attach_monitor_hotplug();
+    void detach_monitor_hotplug();
+    void handle_monitors_changed();
+
+    GtkApplication* app_ = nullptr;
     ConnectionProfile profile_;
     SessionWindowCallbacks callbacks_;
     bool smoke_test_mode_ = false;
@@ -65,6 +90,7 @@ private:
     std::unique_ptr<ConnectionBar> bar_;
     std::unique_ptr<RdpSession> session_;
     std::unique_ptr<InputManager> input_;
+    std::vector<std::unique_ptr<SecondaryMonitorPane>> secondary_panes_;
 
     // Status banner overlay (Connecting / Reconnecting / Error)
     GtkWidget* status_box_ = nullptr;
@@ -84,8 +110,21 @@ private:
     uint32_t pending_resize_w_ = 0;
     uint32_t pending_resize_h_ = 0;
     bool is_fullscreen_ = false;
+    bool is_multimon_active_ = false;
     bool closing_ = false;
     bool closed_ = false;
+
+    // Coordinated grab across primary + secondary monitor windows
+    bool user_grab_enabled_ = true;
+    bool grab_suspended_ = false;
+    GtkWindow* last_focused_window_ = nullptr;
+    GtkWindow* active_grab_window_ = nullptr;
+    guint focus_leave_timer_id_ = 0;
+
+    // Monitor hotplug observer
+    GListModel* monitor_list_model_ = nullptr;
+    gulong monitors_changed_handler_ = 0;
+    guint hotplug_timer_id_ = 0;
 };
 
 } // namespace winrdp

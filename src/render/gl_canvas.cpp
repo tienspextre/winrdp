@@ -76,13 +76,39 @@ GlCanvas::~GlCanvas() {
 
 void GlCanvas::bind_framebuffer(Framebuffer* fb) {
     fb_ = fb;
+    consumer_resize_gen_ = 0;
+    consumer_frame_gen_ = 0;
     last_resize_gen_ = 0;
     last_frame_gen_ = 0;
+    src_rect_dirty_ = true;
     request_redraw();
 }
 
 void GlCanvas::set_smart_sizing(bool enabled) {
     smart_sizing_ = enabled;
+    request_redraw();
+}
+
+void GlCanvas::set_source_rect(int x, int y, int width, int height) {
+    if (src_rect_.x == x && src_rect_.y == y &&
+        src_rect_.width == width && src_rect_.height == height) {
+        return;
+    }
+    src_rect_ = SourceRect{x, y, width, height};
+    consumer_resize_gen_ = 0;
+    consumer_frame_gen_ = 0;
+    src_rect_dirty_ = true;
+    request_redraw();
+}
+
+void GlCanvas::clear_source_rect() {
+    if (!src_rect_.valid() && src_rect_.x == 0 && src_rect_.y == 0) {
+        return;
+    }
+    src_rect_ = SourceRect{};
+    consumer_resize_gen_ = 0;
+    consumer_frame_gen_ = 0;
+    src_rect_dirty_ = true;
     request_redraw();
 }
 
@@ -93,7 +119,27 @@ void GlCanvas::request_redraw() {
 }
 
 bool GlCanvas::map_to_remote(double widget_x, double widget_y, int& out_rx, int& out_ry) const {
-    return map_widget_to_remote(last_vp_, widget_x, widget_y, out_rx, out_ry);
+    int rx = 0, ry = 0;
+    if (!map_widget_to_remote(last_vp_, widget_x, widget_y, rx, ry)) {
+        return false;
+    }
+    if (src_rect_.valid()) {
+        int sx = std::max(0, src_rect_.x);
+        int sy = std::max(0, src_rect_.y);
+        if (fb_) {
+            const uint32_t fw = fb_->width();
+            const uint32_t fh = fb_->height();
+            if (fw > 0 && fh > 0) {
+                sx = std::clamp(sx, 0, static_cast<int>(fw) - 1);
+                sy = std::clamp(sy, 0, static_cast<int>(fh) - 1);
+            }
+        }
+        rx += sx;
+        ry += sy;
+    }
+    out_rx = rx;
+    out_ry = ry;
+    return true;
 }
 
 void GlCanvas::on_realize(GtkGLArea* area, gpointer user_data) {
@@ -149,6 +195,7 @@ void GlCanvas::on_realize(GtkGLArea* area, gpointer user_data) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
 
+    self->src_rect_dirty_ = true;
     self->last_gl_err_ = glGetError();
     self->gl_ok_ = (self->last_gl_err_ == GL_NO_ERROR);
 }
@@ -172,6 +219,11 @@ void GlCanvas::on_unrealize(GtkGLArea* area, gpointer user_data) {
     }
     self->tex_w_ = 0;
     self->tex_h_ = 0;
+    self->consumer_resize_gen_ = 0;
+    self->consumer_frame_gen_ = 0;
+    self->last_resize_gen_ = 0;
+    self->last_frame_gen_ = 0;
+    self->src_rect_dirty_ = true;
     self->gl_ok_ = false;
 }
 
@@ -192,39 +244,55 @@ void GlCanvas::upload_framebuffer_locked(uint32_t fb_w,
         return;
     }
 
+    int sx = 0;
+    int sy = 0;
+    uint32_t sw = fb_w;
+    uint32_t sh = fb_h;
+    if (src_rect_.valid()) {
+        sx = std::clamp(src_rect_.x, 0, static_cast<int>(fb_w) - 1);
+        sy = std::clamp(src_rect_.y, 0, static_cast<int>(fb_h) - 1);
+        const int max_w = static_cast<int>(fb_w) - sx;
+        const int max_h = static_cast<int>(fb_h) - sy;
+        sw = static_cast<uint32_t>(std::clamp(src_rect_.width, 1, max_w));
+        sh = static_cast<uint32_t>(std::clamp(src_rect_.height, 1, max_h));
+    }
+
     glBindTexture(GL_TEXTURE_2D, texture_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
-    if (resize_gen != last_resize_gen_ || fb_w != tex_w_ || fb_h != tex_h_) {
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    if (resize_gen != last_resize_gen_ || sw != tex_w_ || sh != tex_h_ || src_rect_dirty_) {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(fb_w));
+        const uint8_t* sub_ptr = data + (static_cast<size_t>(sy) * fb_w + static_cast<size_t>(sx)) * 4U;
         glTexImage2D(GL_TEXTURE_2D,
                      0,
                      GL_RGBA8,
-                     static_cast<GLsizei>(fb_w),
-                     static_cast<GLsizei>(fb_h),
+                     static_cast<GLsizei>(sw),
+                     static_cast<GLsizei>(sh),
                      0,
                      GL_BGRA,
                      GL_UNSIGNED_BYTE,
-                     data);
-        tex_w_ = fb_w;
-        tex_h_ = fb_h;
+                     sub_ptr);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        tex_w_ = sw;
+        tex_h_ = sh;
         last_resize_gen_ = resize_gen;
         last_frame_gen_ = frame_gen;
+        src_rect_dirty_ = false;
         ++dirty_uploads_;
     } else if (frame_gen != last_frame_gen_ && !dirty.empty()) {
-        const int dx = std::clamp(dirty.x, 0, static_cast<int>(fb_w) - 1);
-        const int dy = std::clamp(dirty.y, 0, static_cast<int>(fb_h) - 1);
-        const int dw = std::min(dirty.width, static_cast<int>(fb_w) - dx);
-        const int dh = std::min(dirty.height, static_cast<int>(fb_h) - dy);
-        if (dw > 0 && dh > 0) {
+        const int ix1 = std::max(sx, dirty.x);
+        const int iy1 = std::max(sy, dirty.y);
+        const int ix2 = std::min(sx + static_cast<int>(sw), dirty.x + dirty.width);
+        const int iy2 = std::min(sy + static_cast<int>(sh), dirty.y + dirty.height);
+        if (ix2 > ix1 && iy2 > iy1) {
             glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(fb_w));
-            const uint8_t* sub_ptr = data + (static_cast<size_t>(dy) * fb_w + static_cast<size_t>(dx)) * 4U;
+            const uint8_t* sub_ptr = data + (static_cast<size_t>(iy1) * fb_w + static_cast<size_t>(ix1)) * 4U;
             glTexSubImage2D(GL_TEXTURE_2D,
                             0,
-                            dx,
-                            dy,
-                            dw,
-                            dh,
+                            ix1 - sx,
+                            iy1 - sy,
+                            ix2 - ix1,
+                            iy2 - iy1,
                             GL_BGRA,
                             GL_UNSIGNED_BYTE,
                             sub_ptr);
@@ -254,16 +322,19 @@ gboolean GlCanvas::on_render(GtkGLArea* area, GdkGLContext* /*context*/, gpointe
     glClear(GL_COLOR_BUFFER_BIT);
 
     if (self->fb_) {
-        self->fb_->consume([self](uint32_t fb_w,
-                                  uint32_t fb_h,
-                                  uint32_t stride_bytes,
-                                  const uint8_t* data,
-                                  const DirtyRect& dirty,
-                                  uint64_t resize_gen,
-                                  uint64_t frame_gen) {
-            self->upload_framebuffer_locked(
-                fb_w, fb_h, stride_bytes, data, dirty, resize_gen, frame_gen);
-        });
+        self->fb_->read_snapshot(
+            self->consumer_resize_gen_,
+            self->consumer_frame_gen_,
+            [self](uint32_t fb_w,
+                   uint32_t fb_h,
+                   uint32_t stride_bytes,
+                   const uint8_t* data,
+                   const DirtyRect& dirty,
+                   uint64_t resize_gen,
+                   uint64_t frame_gen) {
+                self->upload_framebuffer_locked(
+                    fb_w, fb_h, stride_bytes, data, dirty, resize_gen, frame_gen);
+            });
     }
 
     if (self->tex_w_ > 0 && self->tex_h_ > 0) {

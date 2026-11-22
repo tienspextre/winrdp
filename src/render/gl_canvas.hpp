@@ -11,6 +11,15 @@
 
 namespace winrdp {
 
+struct SourceRect {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+
+    bool valid() const { return width > 0 && height > 0; }
+};
+
 class GlCanvas {
 public:
     GlCanvas();
@@ -24,6 +33,10 @@ public:
     void bind_framebuffer(Framebuffer* fb);
     void set_smart_sizing(bool enabled);
     bool smart_sizing() const { return smart_sizing_; }
+
+    void set_source_rect(int x, int y, int width, int height);
+    void clear_source_rect();
+    SourceRect source_rect() const { return src_rect_; }
 
     void request_redraw();
     bool map_to_remote(double widget_x, double widget_y, int& out_rx, int& out_ry) const;
@@ -54,6 +67,8 @@ private:
     GtkGLArea* area_ = nullptr;
     Framebuffer* fb_ = nullptr;
     bool smart_sizing_ = false;
+    SourceRect src_rect_{};
+    bool src_rect_dirty_ = true;
 
     bool gl_ok_ = false;
     GLuint program_ = 0;
@@ -63,6 +78,8 @@ private:
 
     uint32_t tex_w_ = 0;
     uint32_t tex_h_ = 0;
+    uint64_t consumer_resize_gen_ = 0;
+    uint64_t consumer_frame_gen_ = 0;
     uint64_t last_resize_gen_ = 0;
     uint64_t last_frame_gen_ = 0;
     uint64_t dirty_uploads_ = 0;

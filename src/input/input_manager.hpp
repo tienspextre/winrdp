@@ -16,7 +16,10 @@ namespace winrdp {
 struct InputCallbacks {
     std::function<void()> on_toggle_bar;
     std::function<void()> on_toggle_fullscreen;
+    std::function<void()> on_toggle_multimon;
     std::function<void(bool grabbed)> on_grab_changed;
+    std::function<void(bool focused)> on_focus_changed;
+    std::function<void()> on_toggle_grab_requested;
 };
 
 class InputManager {
@@ -31,7 +34,11 @@ public:
     void set_fullscreen(bool is_fullscreen);
     void set_grab_suspended(bool suspended); // e.g., when cert/auth modal is open
     void set_user_grab_enabled(bool enabled);
+    void set_external_grab_control(bool external);
+    void force_grab(bool want_grab);
     bool is_grabbed() const { return grabbed_; }
+    bool has_focus() const { return has_focus_; }
+    GtkWindow* window() const { return window_; }
 
     void refresh_grab();
     void release_all_keys();
@@ -62,6 +69,7 @@ private:
     bool has_focus_ = false;
     bool grab_suspended_ = false;
     bool user_grab_enabled_ = true;
+    bool external_grab_control_ = false;
     bool grabbed_ = false;
 
     // RightCtrl tap detection so Ctrl+C with RightCtrl still works in Windows,

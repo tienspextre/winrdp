@@ -76,6 +76,40 @@ int main() {
     producer.join();
     consumer.join();
 
+    // Multi-consumer read_snapshot() independence check
+    Framebuffer mfb;
+    mfb.resize(200, 100);
+    std::vector<uint8_t> msrc(200 * 100 * 4, 0x77);
+    mfb.update_region(msrc.data(), 800, 10, 10, 20, 20);
+    mfb.update_region(msrc.data(), 800, 120, 30, 30, 20);
+
+    uint64_t rgen1 = 0, fgen1 = 0;
+    uint64_t rgen2 = 0, fgen2 = 0;
+    DirtyRect c1_first, c2_first;
+    mfb.read_snapshot(rgen1, fgen1, [&](uint32_t, uint32_t, uint32_t, const uint8_t*,
+                                        const DirtyRect& d, uint64_t, uint64_t) {
+        c1_first = d;
+    });
+    mfb.update_region(msrc.data(), 800, 160, 40, 20, 20);
+    mfb.read_snapshot(rgen2, fgen2, [&](uint32_t, uint32_t, uint32_t, const uint8_t*,
+                                        const DirtyRect& d, uint64_t, uint64_t) {
+        c2_first = d;
+    });
+    WINRDP_CHECK(c1_first.width == 200 && c1_first.height == 100);
+    WINRDP_CHECK(c2_first.width == 200 && c2_first.height == 100);
+
+    DirtyRect c1_next, c2_next;
+    mfb.read_snapshot(rgen1, fgen1, [&](uint32_t, uint32_t, uint32_t, const uint8_t*,
+                                        const DirtyRect& d, uint64_t, uint64_t) {
+        c1_next = d;
+    });
+    mfb.read_snapshot(rgen2, fgen2, [&](uint32_t, uint32_t, uint32_t, const uint8_t*,
+                                        const DirtyRect& d, uint64_t, uint64_t) {
+        c2_next = d;
+    });
+    WINRDP_CHECK(c1_next.x == 160 && c1_next.y == 40 && c1_next.width == 20 && c1_next.height == 20);
+    WINRDP_CHECK(c2_next.empty());
+
     std::cout << "test_framebuffer: PASS\n";
     return 0;
 }

@@ -17,6 +17,7 @@ struct ConnectionBarCallbacks {
     std::function<void()> on_send_cad;
     std::function<void()> on_toggle_smart_sizing;
     std::function<void()> on_minimize;
+    std::function<void()> on_toggle_multimon;
     std::function<void()> on_toggle_fullscreen;
     std::function<void()> on_disconnect;
 };
@@ -44,6 +45,7 @@ public:
     void set_title(const std::string& title);
     void set_grabbed(bool grabbed);
     void set_fullscreen(bool is_fullscreen);
+    void set_multimon(bool active, size_t monitor_count = 1);
     void set_smart_sizing(bool enabled);
     void update_telemetry(const SessionTelemetry& t);
 
@@ -72,6 +74,7 @@ private:
     GtkWidget* sizing_btn_ = nullptr;
     GtkWidget* hide_btn_ = nullptr;
     GtkWidget* min_btn_ = nullptr;
+    GtkWidget* multimon_btn_ = nullptr;
     GtkWidget* fs_btn_ = nullptr;
     GtkWidget* close_btn_ = nullptr;
 

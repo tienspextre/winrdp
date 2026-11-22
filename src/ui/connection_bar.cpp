@@ -54,6 +54,7 @@ ConnectionBar::ConnectionBar(std::string title,
     sizing_btn_ = make_icon_btn("zoom-fit-best-symbolic", "Toggle Smart Sizing");
     hide_btn_ = make_icon_btn("go-up-symbolic", "Hide Connection Bar (Ctrl+Alt+Home)");
     min_btn_ = make_icon_btn("window-minimize-symbolic", "Minimize");
+    multimon_btn_ = make_icon_btn("video-joined-displays-symbolic", "Toggle Multi-Monitor (Ctrl+Alt+M)");
     fs_btn_ = make_icon_btn("view-restore-symbolic", "Toggle Fullscreen / Windowed (Ctrl+Alt+Enter)");
     close_btn_ = make_icon_btn("window-close-symbolic", "Disconnect");
     gtk_widget_add_css_class(close_btn_, "danger");
@@ -67,6 +68,7 @@ ConnectionBar::ConnectionBar(std::string title,
     gtk_box_append(GTK_BOX(bar_box_), sizing_btn_);
     gtk_box_append(GTK_BOX(bar_box_), hide_btn_);
     gtk_box_append(GTK_BOX(bar_box_), min_btn_);
+    gtk_box_append(GTK_BOX(bar_box_), multimon_btn_);
     gtk_box_append(GTK_BOX(bar_box_), fs_btn_);
     gtk_box_append(GTK_BOX(bar_box_), close_btn_);
 
@@ -181,6 +183,15 @@ ConnectionBar::ConnectionBar(std::string title,
         G_CALLBACK(+[](GtkButton*, gpointer data) {
             auto* self = static_cast<ConnectionBar*>(data);
             if (self->callbacks_.on_minimize) self->callbacks_.on_minimize();
+        }),
+        this);
+
+    g_signal_connect(
+        multimon_btn_,
+        "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer data) {
+            auto* self = static_cast<ConnectionBar*>(data);
+            if (self->callbacks_.on_toggle_multimon) self->callbacks_.on_toggle_multimon();
         }),
         this);
 
@@ -337,6 +348,21 @@ void ConnectionBar::set_fullscreen(bool is_fullscreen) {
                              is_fullscreen ? "view-restore-symbolic" : "view-fullscreen-symbolic");
 }
 
+void ConnectionBar::set_multimon(bool active, size_t monitor_count) {
+    if (!multimon_btn_) return;
+    if (active) {
+        gtk_widget_add_css_class(multimon_btn_, "active");
+        char tip[128];
+        std::snprintf(tip, sizeof(tip),
+                      "Multi-Monitor Active (%zu displays) — Ctrl+Alt+M for Single Monitor",
+                      monitor_count);
+        gtk_widget_set_tooltip_text(multimon_btn_, tip);
+    } else {
+        gtk_widget_remove_css_class(multimon_btn_, "active");
+        gtk_widget_set_tooltip_text(multimon_btn_, "Toggle Multi-Monitor (Ctrl+Alt+M)");
+    }
+}
+
 void ConnectionBar::set_smart_sizing(bool enabled) {
     if (enabled) {
         gtk_widget_add_css_class(sizing_btn_, "active");
@@ -372,9 +398,13 @@ void ConnectionBar::update_telemetry(const SessionTelemetry& t) {
         gtk_widget_add_css_class(signal_icon_, "winrdp-signal-poor");
     }
 
+    char mon_str[32] = "";
+    if (t.monitor_count > 1) {
+        std::snprintf(mon_str, sizeof(mon_str), " (%u monitors)", t.monitor_count);
+    }
     char tip[256];
-    std::snprintf(tip, sizeof(tip), "%ux%u • Codec: %s%s • RTT: %s • %.1f fps",
-                  t.width, t.height, t.codec.c_str(),
+    std::snprintf(tip, sizeof(tip), "%ux%u%s • Codec: %s%s • RTT: %s • %.1f fps",
+                  t.width, t.height, mon_str, t.codec.c_str(),
                   t.hw_accel ? " (Intel VA-API)" : "",
                   t.rtt_ms >= 0 ? (std::to_string(t.rtt_ms) + " ms").c_str() : "n/a",
                   t.fps);

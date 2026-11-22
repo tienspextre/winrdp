@@ -76,6 +76,7 @@ struct ConnectionProfile {
     bool dynamic_resolution = true;
     bool smart_sizing = false;
     uint32_t scale_factor = 100; // 100 = auto/1x, 125, 150, 200
+    std::vector<int32_t> selected_monitors; // empty = all in MultiMonitor or auto/primary in Fullscreen
     ConnectionBarMode connection_bar_mode = ConnectionBarMode::AutoHide;
     std::string bar_toggle_shortcut = "Ctrl+Alt+Home";
     std::string grab_release_key = "RightCtrl";

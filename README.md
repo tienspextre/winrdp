@@ -14,15 +14,16 @@
   - Chụp toàn bộ `Alt+Tab`, phím `Win`, `PrintScreen`, `Ctrl+Shift+Esc` gửi thẳng vào Windows khi focus.
   - Không gắn `GtkIMContext` lên vùng RDP → gõ UniKey/EVKey trong Windows hoàn toàn mượt mà, không bị `fcitx5`/`ibus` của Ubuntu can thiệp.
 - **Đầy đủ tính năng:**
-  - Hardware H.264/AVC444 qua Intel `iHD` VA-API, Dynamic Resolution (`MS-RDPEDISP` debounce 250ms), Con trỏ phần cứng RGBA, Clipboard 2 chiều (chữ, HTML, ảnh, file qua FUSE3), Âm thanh/Mic, Chia sẻ thư mục (`\\tsclient`), Đa màn hình (`_NET_WM_FULLSCREEN_MONITORS`), Tự kết nối lại không làm văng fullscreen, Lưu mật khẩu an toàn bằng GNOME Keyring (`libsecret`), Hỗ trợ đọc/xuất file `.rdp` (kể cả UTF-16LE từ Windows).
+  - Hardware H.264/AVC444 qua Intel `iHD` VA-API, Dynamic Resolution (`MS-RDPEDISP` debounce 250ms), Con trỏ phần cứng RGBA, Clipboard 2 chiều (chữ, HTML, ảnh, file qua FUSE3), Âm thanh/Mic, Chia sẻ thư mục (`\\tsclient`), **Đa màn hình thực sự (`UseMultimon` + `gtk_window_fullscreen_on_monitor` trên cả X11 & Wayland)** (chọn toàn bộ hoặc từng màn hình cụ thể, bật/tắt live bằng `Ctrl+Alt+M`), Tự kết nối lại không làm văng fullscreen, Lưu mật khẩu an toàn bằng GNOME Keyring (`libsecret`), Hỗ trợ đọc/xuất file `.rdp` (kể cả UTF-16LE và `selectedmonitors` từ Windows).
 
 ## Cài đặt nhanh trên Ubuntu 24.04 (`amd64`)
 
 Tải file `.deb` mới nhất tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (đã đóng gói sẵn **FreeRDP 3.33.1** bật **H.264/AVC444 + VA-API** trong `/usr/lib/winrdp/lib/`, không xung đột với thư viện hệ thống) rồi cài bằng `apt`:
 
 ```bash
+wget https://github.com/tienspextre/winrdp/releases/download/v1.1.0/winrdp_1.1.0_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.0.0_amd64.deb
+sudo apt install ./winrdp_1.1.0_amd64.deb
 ```
 
 ## Phím tắt mặc định trong phiên RDP
@@ -30,6 +31,7 @@ sudo apt install ./winrdp_1.0.0_amd64.deb
 | Phím tắt | Chức năng |
 | --- | --- |
 | `Ctrl + Alt + Home` hoặc `Ctrl + Alt + Pause` | Ẩn / hiện nhanh thanh Connection Bar (kể cả ở chế độ ẩn hoàn toàn) |
+| `Ctrl + Alt + M` | Bật / tắt chế độ **Nhiều màn hình (Multi-Monitor)** ngay trong phiên |
 | `Right Ctrl` (bấm nhả đơn) | Thả / bắt lại bàn phím giữa Ubuntu và Windows |
 | `Ctrl + Alt + Enter` | Chuyển nhanh Fullscreen / Windowed |
 
@@ -46,9 +48,12 @@ sudo apt install ./winrdp_1.0.0_amd64.deb
 ## Sử dụng qua dòng lệnh
 
 ```bash
-winrdp                           # Mở Connection Manager
-winrdp server.rdp                # Kết nối ngay bằng file .rdp
-winrdp rdp://user@192.168.1.50   # Kết nối nhanh
+winrdp                              # Mở Connection Manager
+winrdp server.rdp                   # Kết nối ngay bằng file .rdp
+winrdp rdp://user@192.168.1.50      # Kết nối nhanh
+winrdp --multimon user@10.0.0.5     # Kết nối spanning nhiều màn hình
+winrdp --monitors 0,1 user@10.0.0.5 # Chỉ dùng màn hình 0 và 1
+winrdp --list-monitors              # Liệt kê chỉ số màn hình & độ phân giải hiện tại
 winrdp --fullscreen --no-bar 10.0.0.5
-winrdp --smoke-test              # Kiểm tra OpenGL 3.3, FreeRDP 3.33.1 và UI
+winrdp --smoke-test                 # Kiểm tra OpenGL 3.3, multi-canvas, FreeRDP 3.33.1 và UI
 ```

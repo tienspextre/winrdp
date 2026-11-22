@@ -31,6 +31,7 @@ public:
     PointerBridge& operator=(const PointerBridge&) = delete;
 
     void attach_widget(GtkWidget* widget);
+    void detach_widget(GtkWidget* widget);
     void detach_widget();
     void set_position_callback(PositionCallback cb);
 
@@ -49,8 +50,12 @@ private:
 
     struct AliveToken {
         std::mutex mutex;
-        GtkWidget* widget = nullptr;
+        std::vector<GtkWidget*> widgets;
         bool alive = true;
+        bool has_last = false;
+        std::shared_ptr<CursorBitmap> last_bmp;
+        bool last_is_null = false;
+        bool last_is_default = true;
     };
 
     std::shared_ptr<AliveToken> token_ = std::make_shared<AliveToken>();

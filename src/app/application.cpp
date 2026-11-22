@@ -2,17 +2,20 @@
 
 #include "config/keyring.hpp"
 #include "config/rdp_file.hpp"
+#include "input/monitor_layout.hpp"
 #include "rdp/framebuffer.hpp"
 #include "rdp/rdp_session.hpp"
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -21,7 +24,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.0.0"
+#define WINRDP_VERSION "1.1.0"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -102,12 +105,39 @@ Application::~Application() = default;
 
 CliOptions Application::parse_cli(int argc, char** argv) {
     CliOptions opts;
+    auto parse_monitor_csv = [](const std::string& csv, std::vector<int32_t>& out) {
+        std::stringstream ss(csv);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            if (tok.empty()) continue;
+            try {
+                size_t pos = 0;
+                long v = std::stol(tok, &pos, 10);
+                if (pos == tok.size() && v >= 0 && v < 64) {
+                    const int32_t idx = static_cast<int32_t>(v);
+                    if (std::find(out.begin(), out.end(), idx) == out.end()) {
+                        out.push_back(idx);
+                    }
+                }
+            } catch (...) {
+            }
+        }
+    };
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i] ? argv[i] : "";
         if (arg == "--version" || arg == "-v") {
             opts.show_version = true;
         } else if (arg == "--smoke-test") {
             opts.smoke_test = true;
+        } else if (arg == "--list-monitors") {
+            opts.list_monitors = true;
+        } else if (arg == "--multimon" || arg == "-m") {
+            opts.force_multimon = true;
+        } else if (arg == "--monitors" && i + 1 < argc && argv[i + 1]) {
+            parse_monitor_csv(argv[++i], opts.selected_monitors);
+        } else if (arg.rfind("--monitors=", 0) == 0) {
+            parse_monitor_csv(arg.substr(11), opts.selected_monitors);
         } else if (arg == "--fullscreen" || arg == "-f") {
             opts.force_fullscreen = true;
         } else if (arg == "--windowed" || arg == "-w") {
@@ -153,6 +183,13 @@ void Application::launch_session(ConnectionProfile profile) {
 
     if (cli_.force_fullscreen) profile.display_mode = DisplayMode::Fullscreen;
     if (cli_.force_windowed) profile.display_mode = DisplayMode::Windowed;
+    if (cli_.force_multimon) profile.display_mode = DisplayMode::MultiMonitor;
+    if (!cli_.selected_monitors.empty()) {
+        profile.selected_monitors = cli_.selected_monitors;
+        if (cli_.selected_monitors.size() >= 2 && !cli_.force_windowed) {
+            profile.display_mode = DisplayMode::MultiMonitor;
+        }
+    }
     if (cli_.force_no_bar) profile.connection_bar_mode = ConnectionBarMode::Hidden;
     if (cli_.force_pinned_bar) profile.connection_bar_mode = ConnectionBarMode::Pinned;
 
@@ -229,15 +266,27 @@ int Application::run_smoke_test() {
 
     Framebuffer test_fb;
     test_fb.resize(640, 480);
-    std::vector<uint8_t> patch(128 * 128 * 4, 0);
+    std::vector<uint8_t> patch(640 * 480 * 4, 0);
     for (size_t i = 0; i < patch.size(); i += 4) {
         patch[i + 0] = 0xD4; // B
         patch[i + 1] = 0x78; // G
         patch[i + 2] = 0x00; // R
         patch[i + 3] = 0xFF; // A
     }
-    test_fb.update_region(patch.data(), 128 * 4, 0, 0, 128, 128);
+    test_fb.update_region(patch.data(), 640 * 4, 0, 0, 128, 128);
+    test_fb.update_region(patch.data(), 640 * 4, 350, 50, 128, 128);
+    sess_win->canvas().set_source_rect(0, 0, 320, 480);
     sess_win->canvas().bind_framebuffer(&test_fb);
+
+    // Secondary GlCanvas rendering right half (320..640) from the same shared Framebuffer
+    GtkWindow* sec_win = GTK_WINDOW(gtk_window_new());
+    gtk_window_set_application(sec_win, GTK_APPLICATION(app_));
+    gtk_window_set_title(sec_win, "WinRDP SmokeTest Secondary Pane");
+    gtk_window_set_default_size(sec_win, 320, 480);
+    auto right_canvas = std::make_unique<GlCanvas>();
+    right_canvas->set_source_rect(320, 0, 320, 480);
+    right_canvas->bind_framebuffer(&test_fb);
+    gtk_window_set_child(sec_win, right_canvas->widget());
 
     // Cycle all 3 ConnectionBar modes inside the single GtkOverlay
     sess_win->connection_bar().set_mode(ConnectionBarMode::Pinned);
@@ -247,9 +296,11 @@ int Application::run_smoke_test() {
     sess_win->connection_bar().set_mode(ConnectionBarMode::AutoHide);
 
     sess_win->present();
+    gtk_window_present(sec_win);
     sess_win->canvas().request_redraw();
+    right_canvas->request_redraw();
 
-    // Pump GLib main context until GtkGLArea finishes at least 1 render pass (max 2s)
+    // Pump GLib main context until both primary & secondary GtkGLAreas render >= 1 pass (max 2s)
     GMainContext* ctx = g_main_context_default();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -257,7 +308,9 @@ int Application::run_smoke_test() {
             g_main_context_iteration(ctx, FALSE);
         }
         if (sess_win->canvas().gl_initialized() &&
-            sess_win->canvas().dirty_upload_count() >= 1) {
+            sess_win->canvas().dirty_upload_count() >= 1 &&
+            right_canvas->gl_initialized() &&
+            right_canvas->dirty_upload_count() >= 1) {
             break;
         }
         g_usleep(10000);
@@ -266,6 +319,12 @@ int Application::run_smoke_test() {
     const bool gl_ok = sess_win->canvas().gl_initialized() &&
                        sess_win->canvas().last_gl_error() == 0 &&
                        sess_win->canvas().dirty_upload_count() >= 1;
+    int rx = 0, ry = 0;
+    const bool map_ok = right_canvas->map_to_remote(160.0, 240.0, rx, ry) && rx >= 320;
+    const bool multimon_gl_ok = right_canvas->gl_initialized() &&
+                                right_canvas->last_gl_error() == 0 &&
+                                right_canvas->dirty_upload_count() >= 1 &&
+                                map_ok;
     const bool mgr_ok = gtk_widget_get_realized(GTK_WIDGET(manager_->gtk_window())) == TRUE;
 
     const std::string css_path = resolve_css_path();
@@ -279,18 +338,22 @@ int Application::run_smoke_test() {
     std::cout << "OpenGL Vendor: " << sess_win->canvas().gl_vendor() << "\n";
     std::cout << "OpenGL Renderer: " << sess_win->canvas().gl_renderer() << "\n";
     std::cout << "OpenGL Version: " << sess_win->canvas().gl_version() << "\n";
-    std::cout << "Dirty-rect GL uploads: " << sess_win->canvas().dirty_upload_count()
+    std::cout << "Dirty-rect GL uploads (primary): " << sess_win->canvas().dirty_upload_count()
               << " (glGetError=" << sess_win->canvas().last_gl_error() << ")\n";
+    std::cout << "Multi-monitor dual-canvas GL (uploads=" << right_canvas->dirty_upload_count()
+              << ", map_rx=" << rx << "): " << (multimon_gl_ok ? "OK" : "FAIL") << "\n";
     std::cout << "ConnectionBar overlay modes (Pinned=" << pinned_ok
               << ", Hidden=" << hidden_ok << "): " << ((pinned_ok && hidden_ok) ? "OK" : "FAIL") << "\n";
     std::cout << "ManagerWindow realized: " << (mgr_ok ? "OK" : "FAIL") << "\n";
 
+    right_canvas.reset();
+    gtk_window_destroy(sec_win);
     sess_win.reset();
     manager_.reset();
     g_object_unref(app_);
     app_ = nullptr;
 
-    if (!gl_ok || !pinned_ok || !hidden_ok || !mgr_ok || !RdpSession::has_h264_hwaccel_support()) {
+    if (!gl_ok || !multimon_gl_ok || !pinned_ok || !hidden_ok || !mgr_ok || !RdpSession::has_h264_hwaccel_support()) {
         std::cerr << "SMOKE_TEST_FAIL\n";
         return 1;
     }
@@ -313,6 +376,29 @@ int Application::run(int argc, char** argv) {
         std::cout << "WinRDP " << WINRDP_VERSION << " (FreeRDP " << RdpSession::freerdp_version_string()
                   << ", H264/HWAccel=" << (RdpSession::has_h264_hwaccel_support() ? "ON" : "OFF")
                   << ")\n";
+        return 0;
+    }
+
+    if (cli_.list_monitors) {
+        adw_init();
+        if (!gtk_init_check()) {
+            std::cerr << "Failed to initialize GTK display for --list-monitors\n";
+            return 2;
+        }
+        const auto mons = query_local_monitors();
+        std::cout << "Detected " << mons.size() << " monitor(s):\n";
+        for (const auto& m : mons) {
+            std::cout << "  [" << m.index << "] "
+                      << (m.connector.empty() ? "unknown" : m.connector)
+                      << "  " << m.width << "x" << m.height
+                      << "+" << m.x << "+" << m.y
+                      << "  scale=" << m.scale_factor << "x"
+                      << (m.is_primary ? "  (Primary)" : "");
+            if (!m.description.empty()) {
+                std::cout << "  - " << m.description;
+            }
+            std::cout << "\n";
+        }
         return 0;
     }
 

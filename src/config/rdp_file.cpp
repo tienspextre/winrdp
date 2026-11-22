@@ -224,6 +224,19 @@ bool parse_rdp_content(const std::string& raw_bytes, ConnectionProfile& out_prof
             if (ival == 1) {
                 p.display_mode = DisplayMode::MultiMonitor;
             }
+        } else if (key == "selectedmonitors") {
+            p.selected_monitors.clear();
+            std::stringstream mss(val);
+            std::string tok;
+            while (std::getline(mss, tok, ',')) {
+                int idx = -1;
+                if (parse_int_val(tok, idx) && idx >= 0 && idx < 64) {
+                    if (std::find(p.selected_monitors.begin(), p.selected_monitors.end(), idx) ==
+                        p.selected_monitors.end()) {
+                        p.selected_monitors.push_back(idx);
+                    }
+                }
+            }
         } else if (key == "desktopwidth" && is_int) {
             if (ival >= 320 && ival <= 16384) p.width = static_cast<uint32_t>(ival);
         } else if (key == "desktopheight" && is_int) {
@@ -358,6 +371,14 @@ std::string export_rdp_content(const ConnectionProfile& p) {
     }
     out << "screen mode id:i:" << (p.display_mode == DisplayMode::Windowed ? 1 : 2) << "\r\n";
     out << "use multimon:i:" << (p.display_mode == DisplayMode::MultiMonitor ? 1 : 0) << "\r\n";
+    if (!p.selected_monitors.empty()) {
+        out << "selectedmonitors:s:";
+        for (size_t i = 0; i < p.selected_monitors.size(); ++i) {
+            if (i > 0) out << ",";
+            out << p.selected_monitors[i];
+        }
+        out << "\r\n";
+    }
     out << "desktopwidth:i:" << p.width << "\r\n";
     out << "desktopheight:i:" << p.height << "\r\n";
     out << "session bpp:i:32\r\n";

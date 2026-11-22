@@ -33,6 +33,7 @@ int main() {
         "username:s:CORP\\alice\r\n"
         "screen mode id:i:2\r\n"
         "use multimon:i:1\r\n"
+        "selectedmonitors:s:0,2\r\n"
         "desktopwidth:i:2560\r\n"
         "desktopheight:i:1440\r\n"
         "smart sizing:i:1\r\n"
@@ -56,6 +57,8 @@ int main() {
     WINRDP_CHECK(p1.domain == "CORP");
     WINRDP_CHECK(p1.username == "alice");
     WINRDP_CHECK(p1.display_mode == DisplayMode::MultiMonitor);
+    WINRDP_CHECK(p1.selected_monitors.size() == 2 &&
+                 p1.selected_monitors[0] == 0 && p1.selected_monitors[1] == 2);
     WINRDP_CHECK(p1.width == 2560 && p1.height == 1440);
     WINRDP_CHECK(p1.smart_sizing == true);
     WINRDP_CHECK(p1.dynamic_resolution == false);
@@ -95,6 +98,7 @@ int main() {
     WINRDP_CHECK(p3.username == p1.username);
     WINRDP_CHECK(p3.domain == p1.domain);
     WINRDP_CHECK(p3.display_mode == p1.display_mode);
+    WINRDP_CHECK(p3.selected_monitors == p1.selected_monitors);
     WINRDP_CHECK(p3.connection_bar_mode == p1.connection_bar_mode);
     WINRDP_CHECK(p3.shared_folders.size() == 2);
 
