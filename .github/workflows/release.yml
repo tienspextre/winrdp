@@ -73,10 +73,12 @@ jobs:
             ldd "$TMP_DIR/usr/bin/winrdp"
             exit 1
           fi
+          BUNDLE_DIR_REAL="$(realpath -m "$TMP_DIR/usr/lib/winrdp/lib")"
           for libname in libfreerdp3.so.3 libfreerdp-client3.so.3 libwinpr3.so.3; do
             resolved="$(ldd "$TMP_DIR/usr/bin/winrdp" | awk -v l="$libname" '$1 == l {print $3}')"
-            if [[ "$resolved" != "$TMP_DIR/usr/lib/winrdp/lib/"* ]]; then
-              echo "ERROR: $libname did not resolve to bundled dir: $resolved" >&2
+            resolved_real="$(realpath -m "$resolved")"
+            if [[ "$resolved_real" != "$BUNDLE_DIR_REAL/"* ]]; then
+              echo "ERROR: $libname did not resolve to bundled dir: $resolved ($resolved_real)" >&2
               exit 1
             fi
           done
