@@ -2,6 +2,7 @@
 
 #include "config/keyring.hpp"
 #include "config/rdp_file.hpp"
+#include "input/monitor_layout.hpp"
 #include "ui/profile_dialog.hpp"
 
 #include <algorithm>
@@ -127,6 +128,9 @@ void ManagerWindow::setup_ui() {
     quick_multimon_btn_ = gtk_toggle_button_new();
     gtk_button_set_icon_name(GTK_BUTTON(quick_multimon_btn_), "video-joined-displays-symbolic");
     gtk_widget_set_tooltip_text(quick_multimon_btn_, "Quick Connect with Multi-Monitor");
+    if (query_local_monitors(gtk_widget_get_display(GTK_WIDGET(window_))).size() >= 2) {
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(quick_multimon_btn_), TRUE);
+    }
 
     gtk_box_append(GTK_BOX(quick_box), quick_entry_);
     gtk_box_append(GTK_BOX(quick_box), quick_multimon_btn_);
@@ -493,6 +497,9 @@ void ManagerWindow::on_quick_connect_activated() {
 void ManagerWindow::on_new_connection() {
     ConnectionProfile p;
     p.id = ProfileStore::generate_uuid();
+    if (query_local_monitors(gtk_widget_get_display(GTK_WIDGET(window_))).size() >= 2) {
+        p.display_mode = DisplayMode::MultiMonitor;
+    }
     show_profile_dialog(GTK_WINDOW(window_), p, true, [this](ConnectionProfile saved) {
         store_->upsert(std::move(saved));
         store_->save();

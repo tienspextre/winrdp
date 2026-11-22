@@ -124,6 +124,42 @@ int main() {
         WINRDP_CHECK(!format_monitor_label(sel_gap[0]).empty());
     }
 
+    // 5. Cross-monitor pointer drag mapping (map_multimon_pointer_to_remote)
+    {
+        // A: Dragging right from Primary (0..1920) -> Secondary (1920..3840) at wx=2400 -> rx==2400
+        auto layout_lr = compute_virtual_desktop_layout({
+            make_mon(0, "DP-1", 0, 0, 1920, 1080, 1, true),
+            make_mon(1, "HDMI-1", 1920, 0, 1920, 1080, 1, false),
+        });
+        int rx = 0, ry = 0;
+        WINRDP_CHECK(map_multimon_pointer_to_remote(layout_lr, 0, 2400.0, 500.0, 1920.0, 1080.0, rx, ry));
+        WINRDP_CHECK(rx == 2400 && ry == 500);
+
+        // B: Dragging left from Right-Primary (1920..4480) into Left-Secondary (0..1920) at wx=-500 -> rx==1420
+        auto layout_rl = compute_virtual_desktop_layout({
+            make_mon(0, "HDMI-1", 0, 0, 1920, 1080, 1, false),
+            make_mon(1, "DP-1", 1920, 0, 2560, 1440, 1, true),
+        });
+        WINRDP_CHECK(map_multimon_pointer_to_remote(layout_rl, 0, -500.0, 300.0, 2560.0, 1440.0, rx, ry));
+        WINRDP_CHECK(rx == 1420 && ry == 300);
+
+        // C: Dragging across mixed DPI (3840x2160 @ 2x logical 0..1920 -> 1920x1080 @ 1x logical 1920..3840)
+        auto layout_dpi = compute_virtual_desktop_layout({
+            make_mon(0, "eDP-1", 0, 0, 1920, 1080, 2, true),
+            make_mon(1, "DP-2", 1920, 0, 1920, 1080, 1, false),
+        });
+        WINRDP_CHECK(map_multimon_pointer_to_remote(layout_dpi, 0, 2400.0, 400.0, 1920.0, 1080.0, rx, ry));
+        WINRDP_CHECK(rx == 4320 && ry == 400);
+
+        // D: Dragging into L-shaped dead zone below 1920x1080 secondary snaps cleanly to nearest monitor
+        auto layout_l = compute_virtual_desktop_layout({
+            make_mon(0, "DP-1", 0, 0, 1920, 1440, 1, true),
+            make_mon(1, "HDMI-1", 1920, 0, 1920, 1080, 1, false),
+        });
+        WINRDP_CHECK(map_multimon_pointer_to_remote(layout_l, 0, 2200.0, 1300.0, 1920.0, 1440.0, rx, ry));
+        WINRDP_CHECK(rx == 2200 && ry == 1079);
+    }
+
     std::cout << "test_monitor_layout: PASS\n";
     return 0;
 }

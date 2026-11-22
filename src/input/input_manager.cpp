@@ -32,15 +32,12 @@ InputManager::InputManager(GtkWindow* window,
     g_signal_connect(key_ctrl_, "key-released", G_CALLBACK(&InputManager::on_key_released), this);
     gtk_widget_add_controller(target, key_ctrl_);
 
-    motion_ctrl_ = gtk_event_controller_motion_new();
-    g_signal_connect(motion_ctrl_, "motion", G_CALLBACK(&InputManager::on_motion), this);
-    gtk_widget_add_controller(target, motion_ctrl_);
-
-    click_gesture_ = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click_gesture_), 0);
-    g_signal_connect(click_gesture_, "pressed", G_CALLBACK(&InputManager::on_button_pressed), this);
-    g_signal_connect(click_gesture_, "released", G_CALLBACK(&InputManager::on_button_released), this);
-    gtk_widget_add_controller(target, GTK_EVENT_CONTROLLER(click_gesture_));
+    // Legacy event controller preserves out-of-bounds motion + button release during
+    // cross-monitor drags instead of cancelling at widget boundaries like GtkGestureClick.
+    legacy_ctrl_ = gtk_event_controller_legacy_new();
+    gtk_event_controller_set_propagation_phase(legacy_ctrl_, GTK_PHASE_CAPTURE);
+    g_signal_connect(legacy_ctrl_, "event", G_CALLBACK(&InputManager::on_legacy_event), this);
+    gtk_widget_add_controller(target, legacy_ctrl_);
 
     scroll_ctrl_ = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
     g_signal_connect(scroll_ctrl_, "scroll", G_CALLBACK(&InputManager::on_scroll), this);
@@ -53,6 +50,7 @@ InputManager::InputManager(GtkWindow* window,
 }
 
 InputManager::~InputManager() {
+    cancel_grab_retry();
     apply_system_grab(false);
     release_all_keys();
 }
@@ -90,7 +88,28 @@ void InputManager::set_external_grab_control(bool external) {
 }
 
 void InputManager::force_grab(bool want_grab) {
+    if (want_grab) {
+        grab_retry_count_ = 0;
+    }
     apply_system_grab(want_grab);
+}
+
+bool InputManager::is_x11_surface() const {
+#ifdef GDK_WINDOWING_X11
+    if (!window_) return false;
+    GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
+    return surface && GDK_IS_X11_SURFACE(surface);
+#else
+    return false;
+#endif
+}
+
+void InputManager::cancel_grab_retry() {
+    if (grab_retry_timer_id_ != 0) {
+        g_source_remove(grab_retry_timer_id_);
+        grab_retry_timer_id_ = 0;
+    }
+    grab_retry_count_ = 0;
 }
 
 void InputManager::refresh_grab() {
@@ -107,6 +126,10 @@ void InputManager::refresh_grab() {
 }
 
 void InputManager::apply_system_grab(bool want_grab) {
+    want_grab_ = want_grab;
+    if (!want_grab) {
+        cancel_grab_retry();
+    }
     if (grabbed_ == want_grab) return;
 
     if (!window_) {
@@ -130,6 +153,26 @@ void InputManager::apply_system_grab(bool want_grab) {
                                              GrabModeAsync, GrabModeAsync, CurrentTime);
                 XFlush(xdisplay);
                 grabbed_ = (rc == GrabSuccess);
+                if (grabbed_) {
+                    cancel_grab_retry();
+                } else if (grab_retry_timer_id_ == 0 && grab_retry_count_ < 8) {
+                    grab_retry_timer_id_ = g_timeout_add(
+                        100,
+                        +[](gpointer data) -> gboolean {
+                            auto* self = static_cast<InputManager*>(data);
+                            self->grab_retry_timer_id_ = 0;
+                            if (!self->want_grab_ || self->grabbed_) {
+                                return G_SOURCE_REMOVE;
+                            }
+                            ++self->grab_retry_count_;
+                            self->apply_system_grab(true);
+                            if (self->grabbed_ && self->callbacks_.on_grab_changed) {
+                                self->callbacks_.on_grab_changed(true);
+                            }
+                            return G_SOURCE_REMOVE;
+                        },
+                        this);
+                }
             } else {
                 XUngrabKeyboard(xdisplay, CurrentTime);
                 XFlush(xdisplay);
@@ -292,53 +335,72 @@ void InputManager::on_key_released(GtkEventControllerKey* /*ctrl*/,
     }
 }
 
-void InputManager::on_motion(GtkEventControllerMotion* /*ctrl*/,
-                             double x,
-                             double y,
-                             gpointer user_data) {
-    auto* self = static_cast<InputManager*>(user_data);
-    if (!self->session_ || !self->canvas_) return;
-    int rx = 0, ry = 0;
-    if (self->canvas_->map_to_remote(x, y, rx, ry)) {
-        self->session_->send_mouse_move(rx, ry);
+bool InputManager::map_coords(double wx, double wy, int& rx, int& ry) const {
+    if (callbacks_.map_pointer) {
+        return callbacks_.map_pointer(wx, wy, rx, ry);
     }
+    return canvas_ ? canvas_->map_to_remote(wx, wy, rx, ry) : false;
 }
 
-void InputManager::on_button_pressed(GtkGestureClick* gesture,
-                                     gint /*n_press*/,
-                                     double x,
-                                     double y,
-                                     gpointer user_data) {
+gboolean InputManager::on_legacy_event(GtkEventControllerLegacy* /*ctrl*/,
+                                       GdkEvent* event,
+                                       gpointer user_data) {
     auto* self = static_cast<InputManager*>(user_data);
-    if (!self->canvas_) return;
-    gtk_widget_grab_focus(self->canvas_->widget());
+    if (!event || !self->canvas_ || !self->window_) return FALSE;
 
-    if (!self->session_) return;
-    int rx = 0, ry = 0;
-    if (!self->canvas_->map_to_remote(x, y, rx, ry)) return;
-
-    const guint btn = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
-    switch (btn) {
-        case 1: self->session_->send_mouse_button(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, rx, ry, false); break;
-        case 2: self->session_->send_mouse_button(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON3, rx, ry, false); break;
-        case 3: self->session_->send_mouse_button(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2, rx, ry, false); break;
-        case 8: self->session_->send_mouse_button(PTR_XFLAGS_DOWN | PTR_XFLAGS_BUTTON1, rx, ry, true); break;
-        case 9: self->session_->send_mouse_button(PTR_XFLAGS_DOWN | PTR_XFLAGS_BUTTON2, rx, ry, true); break;
-        default: break;
+    const GdkEventType et = gdk_event_get_event_type(event);
+    if (et != GDK_MOTION_NOTIFY && et != GDK_BUTTON_PRESS && et != GDK_BUTTON_RELEASE) {
+        return FALSE;
     }
-}
 
-void InputManager::on_button_released(GtkGestureClick* gesture,
-                                      gint /*n_press*/,
-                                      double x,
-                                      double y,
-                                      gpointer user_data) {
-    auto* self = static_cast<InputManager*>(user_data);
-    if (!self->session_ || !self->canvas_) return;
+    double sx = 0.0, sy = 0.0;
+    if (!gdk_event_get_position(event, &sx, &sy)) {
+        return FALSE;
+    }
+
+    double nx = 0.0, ny = 0.0;
+    gtk_native_get_surface_transform(GTK_NATIVE(self->window_), &nx, &ny);
+    graphene_point_t in_pt = GRAPHENE_POINT_INIT(
+        static_cast<float>(sx - nx), static_cast<float>(sy - ny));
+    graphene_point_t out_pt{};
+    double wx = static_cast<double>(in_pt.x);
+    double wy = static_cast<double>(in_pt.y);
+    if (gtk_widget_compute_point(GTK_WIDGET(self->window_), self->canvas_->widget(), &in_pt, &out_pt)) {
+        wx = static_cast<double>(out_pt.x);
+        wy = static_cast<double>(out_pt.y);
+    }
+
+    if (et == GDK_MOTION_NOTIFY) {
+        if (self->session_) {
+            int rx = 0, ry = 0;
+            if (self->map_coords(wx, wy, rx, ry)) {
+                self->session_->send_mouse_move(rx, ry);
+            }
+        }
+        return FALSE;
+    }
+
+    const guint btn = gdk_button_event_get_button(event);
+    if (et == GDK_BUTTON_PRESS) {
+        gtk_widget_grab_focus(self->canvas_->widget());
+        if (!self->session_) return TRUE;
+        int rx = 0, ry = 0;
+        if (!self->map_coords(wx, wy, rx, ry)) return TRUE;
+        switch (btn) {
+            case 1: self->session_->send_mouse_button(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, rx, ry, false); break;
+            case 2: self->session_->send_mouse_button(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON3, rx, ry, false); break;
+            case 3: self->session_->send_mouse_button(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2, rx, ry, false); break;
+            case 8: self->session_->send_mouse_button(PTR_XFLAGS_DOWN | PTR_XFLAGS_BUTTON1, rx, ry, true); break;
+            case 9: self->session_->send_mouse_button(PTR_XFLAGS_DOWN | PTR_XFLAGS_BUTTON2, rx, ry, true); break;
+            default: break;
+        }
+        return TRUE;
+    }
+
+    // GDK_BUTTON_RELEASE
+    if (!self->session_) return TRUE;
     int rx = 0, ry = 0;
-    if (!self->canvas_->map_to_remote(x, y, rx, ry)) return;
-
-    const guint btn = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+    if (!self->map_coords(wx, wy, rx, ry)) return TRUE;
     switch (btn) {
         case 1: self->session_->send_mouse_button(PTR_FLAGS_BUTTON1, rx, ry, false); break;
         case 2: self->session_->send_mouse_button(PTR_FLAGS_BUTTON3, rx, ry, false); break;
@@ -347,6 +409,7 @@ void InputManager::on_button_released(GtkGestureClick* gesture,
         case 9: self->session_->send_mouse_button(PTR_XFLAGS_BUTTON2, rx, ry, true); break;
         default: break;
     }
+    return TRUE;
 }
 
 gboolean InputManager::on_scroll(GtkEventControllerScroll* /*ctrl*/,

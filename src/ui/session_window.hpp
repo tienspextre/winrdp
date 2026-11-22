@@ -10,6 +10,7 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -54,6 +55,8 @@ private:
         std::unique_ptr<GlCanvas> canvas;
         std::unique_ptr<InputManager> input;
         MonitorViewport viewport;
+        GdkSurface* bound_surface = nullptr;
+        gulong enter_handler = 0;
     };
 
     void setup_ui();
@@ -66,12 +69,20 @@ private:
     void schedule_dynamic_resize(int pixel_w, int pixel_h);
     void update_status_banner(SessionState state, const std::string& msg, uint32_t attempt, uint32_t max_attempts);
 
+    bool map_pane_pointer(size_t vp_idx, GlCanvas* canvas, double wx, double wy, int& rx, int& ry) const;
+
     void on_pane_focus_changed(GtkWindow* win, bool focused);
+    void on_pane_active_changed(GtkWindow* win);
     void toggle_coordinated_grab();
     void suspend_coordinated_grab(bool suspend);
     void sync_coordinated_grab();
     void release_all_pane_keys();
     InputManager* find_input_for_window(GtkWindow* win) const;
+
+    void attach_surface_monitor_guard(GtkWindow* win, GdkSurface*& slot_surface, gulong& slot_handler);
+    void detach_surface_monitor_guard(GdkSurface*& slot_surface, gulong& slot_handler);
+    void schedule_monitor_repin();
+    void repin_misplaced_monitors();
 
     void attach_monitor_hotplug();
     void detach_monitor_hotplug();
@@ -91,6 +102,7 @@ private:
     std::unique_ptr<RdpSession> session_;
     std::unique_ptr<InputManager> input_;
     std::vector<std::unique_ptr<SecondaryMonitorPane>> secondary_panes_;
+    VirtualDesktopLayout current_layout_{};
 
     // Status banner overlay (Connecting / Reconnecting / Error)
     GtkWidget* status_box_ = nullptr;
@@ -120,6 +132,13 @@ private:
     GtkWindow* last_focused_window_ = nullptr;
     GtkWindow* active_grab_window_ = nullptr;
     guint focus_leave_timer_id_ = 0;
+
+    // Monitor pinning guard (prevents WM from moving one monitor pane onto another)
+    GdkSurface* primary_bound_surface_ = nullptr;
+    gulong primary_enter_handler_ = 0;
+    guint repin_timer_id_ = 0;
+    uint64_t repin_window_start_ms_ = 0;
+    int repin_count_ = 0;
 
     // Monitor hotplug observer
     GListModel* monitor_list_model_ = nullptr;

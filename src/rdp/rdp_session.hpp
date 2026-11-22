@@ -71,6 +71,7 @@ struct SessionCallbacks {
     std::function<void(SessionState state, const std::string& msg, uint32_t attempt, uint32_t max_attempts)> on_state_changed;
     std::function<void()> on_frame_ready;
     std::function<void(uint32_t width, uint32_t height)> on_desktop_resized;
+    std::function<void(uint32_t max_monitors)> on_disp_ready;
     std::function<void(const SessionTelemetry& telemetry)> on_telemetry;
     // Synchronous prompts called on RDP thread; return 0=cancel, 1=trust+store, 2=trust once
     std::function<uint32_t(const CertPromptInfo& info)> on_verify_certificate;
@@ -150,6 +151,8 @@ private:
     static SSIZE_T on_retry_dialog(freerdp* instance, const char* what, size_t current, void* userarg);
     static void on_channel_connected(void* context, const ChannelConnectedEventArgs* e);
     static void on_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e);
+    static UINT on_disp_caps(DispClientContext* context, UINT32 max_monitors,
+                             UINT32 max_area_a, UINT32 max_area_b);
 
     bool configure_settings();
     void worker_main();

@@ -65,4 +65,15 @@ VirtualDesktopLayout compute_virtual_desktop_layout(const std::vector<MonitorInf
 std::vector<rdpMonitor> build_freerdp_monitors(const std::vector<MonitorInfo>& monitors,
                                                uint32_t scale_percent_override = 100);
 
+// Maps a pointer event originating in viewports[origin_viewport_idx] (even when dragged outside
+// that monitor's bounds onto another monitor) to remote virtual desktop pixel coordinates.
+bool map_multimon_pointer_to_remote(const VirtualDesktopLayout& layout,
+                                    size_t origin_viewport_idx,
+                                    double widget_x,
+                                    double widget_y,
+                                    double origin_widget_w,
+                                    double origin_widget_h,
+                                    int& out_rx,
+                                    int& out_ry);
+
 } // namespace winrdp

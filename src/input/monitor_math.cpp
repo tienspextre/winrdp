@@ -377,4 +377,90 @@ std::vector<rdpMonitor> build_freerdp_monitors(const std::vector<MonitorInfo>& m
     return compute_virtual_desktop_layout(monitors, scale_percent_override).rdp_monitors;
 }
 
+bool map_multimon_pointer_to_remote(const VirtualDesktopLayout& layout,
+                                    size_t origin_viewport_idx,
+                                    double widget_x,
+                                    double widget_y,
+                                    double origin_widget_w,
+                                    double origin_widget_h,
+                                    int& out_rx,
+                                    int& out_ry) {
+    if (origin_viewport_idx >= layout.viewports.size() ||
+        origin_widget_w <= 0.0 || origin_widget_h <= 0.0) {
+        return false;
+    }
+
+    const MonitorViewport& orig = layout.viewports[origin_viewport_idx];
+    const double orig_lw = orig.monitor.logical_width > 0
+                               ? static_cast<double>(orig.monitor.logical_width)
+                               : origin_widget_w;
+    const double orig_lh = orig.monitor.logical_height > 0
+                               ? static_cast<double>(orig.monitor.logical_height)
+                               : origin_widget_h;
+
+    const double global_lx = static_cast<double>(orig.monitor.logical_x) +
+                             widget_x * (orig_lw / origin_widget_w);
+    const double global_ly = static_cast<double>(orig.monitor.logical_y) +
+                             widget_y * (orig_lh / origin_widget_h);
+
+    size_t target_idx = layout.viewports.size();
+    for (size_t i = 0; i < layout.viewports.size(); ++i) {
+        const auto& m = layout.viewports[i].monitor;
+        const double lw = m.logical_width > 0 ? static_cast<double>(m.logical_width)
+                                              : static_cast<double>(layout.viewports[i].fb_width);
+        const double lh = m.logical_height > 0 ? static_cast<double>(m.logical_height)
+                                               : static_cast<double>(layout.viewports[i].fb_height);
+        const double x1 = static_cast<double>(m.logical_x);
+        const double y1 = static_cast<double>(m.logical_y);
+        if (global_lx >= x1 && global_lx < x1 + lw &&
+            global_ly >= y1 && global_ly < y1 + lh) {
+            target_idx = i;
+            break;
+        }
+    }
+
+    if (target_idx == layout.viewports.size()) {
+        double best_d2 = -1.0;
+        for (size_t i = 0; i < layout.viewports.size(); ++i) {
+            const auto& m = layout.viewports[i].monitor;
+            const double lw = m.logical_width > 0 ? static_cast<double>(m.logical_width)
+                                                  : static_cast<double>(layout.viewports[i].fb_width);
+            const double lh = m.logical_height > 0 ? static_cast<double>(m.logical_height)
+                                                   : static_cast<double>(layout.viewports[i].fb_height);
+            const double x1 = static_cast<double>(m.logical_x);
+            const double y1 = static_cast<double>(m.logical_y);
+            const double cx = std::clamp(global_lx, x1, x1 + lw);
+            const double cy = std::clamp(global_ly, y1, y1 + lh);
+            const double dx = global_lx - cx;
+            const double dy = global_ly - cy;
+            const double d2 = dx * dx + dy * dy;
+            if (best_d2 < 0.0 || d2 < best_d2) {
+                best_d2 = d2;
+                target_idx = i;
+            }
+        }
+    }
+
+    const MonitorViewport& vp = layout.viewports[target_idx];
+    if (vp.fb_width == 0 || vp.fb_height == 0) {
+        return false;
+    }
+
+    const double vw = vp.monitor.logical_width > 0 ? static_cast<double>(vp.monitor.logical_width)
+                                                   : static_cast<double>(vp.fb_width);
+    const double vh = vp.monitor.logical_height > 0 ? static_cast<double>(vp.monitor.logical_height)
+                                                    : static_cast<double>(vp.fb_height);
+    const double rel_x = std::clamp((global_lx - static_cast<double>(vp.monitor.logical_x)) / vw, 0.0, 1.0);
+    const double rel_y = std::clamp((global_ly - static_cast<double>(vp.monitor.logical_y)) / vh, 0.0, 1.0);
+
+    const int max_px = static_cast<int>(vp.fb_width) - 1;
+    const int max_py = static_cast<int>(vp.fb_height) - 1;
+    const int local_x = std::clamp(static_cast<int>(std::lround(rel_x * static_cast<double>(vp.fb_width))), 0, max_px);
+    const int local_y = std::clamp(static_cast<int>(std::lround(rel_y * static_cast<double>(vp.fb_height))), 0, max_py);
+
+    out_rx = vp.fb_x + local_x;
+    out_ry = vp.fb_y + local_y;
+    return true;
+}
+
 } // namespace winrdp

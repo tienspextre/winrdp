@@ -635,6 +635,10 @@ void RdpSession::on_channel_connected(void* context, const ChannelConnectedEvent
         {
             std::lock_guard<std::mutex> lock(self->channel_mutex_);
             self->disp_ = static_cast<DispClientContext*>(e->pInterface);
+            if (self->disp_) {
+                self->disp_->custom = self;
+                self->disp_->DisplayControlCaps = &RdpSession::on_disp_caps;
+            }
             self->last_disp_layout_.clear();
         }
         {
@@ -660,6 +664,11 @@ void RdpSession::on_channel_disconnected(void* context, const ChannelDisconnecte
         self->clipboard_.unbind_channel(static_cast<CliprdrClientContext*>(e->pInterface));
     } else if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
         std::lock_guard<std::mutex> lock(self->channel_mutex_);
+        auto* d = static_cast<DispClientContext*>(e->pInterface);
+        if (d) {
+            d->DisplayControlCaps = nullptr;
+            d->custom = nullptr;
+        }
         self->disp_ = nullptr;
         self->last_disp_layout_.clear();
     } else if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
@@ -671,6 +680,16 @@ void RdpSession::on_channel_disconnected(void* context, const ChannelDisconnecte
     } else {
         freerdp_client_OnChannelDisconnectedEventHandler(context, e);
     }
+}
+
+UINT RdpSession::on_disp_caps(DispClientContext* context, UINT32 max_monitors,
+                              UINT32 /*max_area_a*/, UINT32 /*max_area_b*/) {
+    if (!context || !context->custom) return CHANNEL_RC_OK;
+    auto* self = static_cast<RdpSession*>(context->custom);
+    if (self->callbacks_.on_disp_ready) {
+        self->callbacks_.on_disp_ready(max_monitors);
+    }
+    return CHANNEL_RC_OK;
 }
 
 void RdpSession::worker_main() {

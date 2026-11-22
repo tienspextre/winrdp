@@ -20,6 +20,7 @@ struct InputCallbacks {
     std::function<void(bool grabbed)> on_grab_changed;
     std::function<void(bool focused)> on_focus_changed;
     std::function<void()> on_toggle_grab_requested;
+    std::function<bool(double wx, double wy, int& out_rx, int& out_ry)> map_pointer;
 };
 
 class InputManager {
@@ -38,6 +39,7 @@ public:
     void force_grab(bool want_grab);
     bool is_grabbed() const { return grabbed_; }
     bool has_focus() const { return has_focus_; }
+    bool is_x11_surface() const;
     GtkWindow* window() const { return window_; }
 
     void refresh_grab();
@@ -46,13 +48,13 @@ public:
 private:
     static gboolean on_key_pressed(GtkEventControllerKey* ctrl, guint keyval, guint keycode, GdkModifierType state, gpointer user_data);
     static void on_key_released(GtkEventControllerKey* ctrl, guint keyval, guint keycode, GdkModifierType state, gpointer user_data);
-    static void on_motion(GtkEventControllerMotion* ctrl, double x, double y, gpointer user_data);
-    static void on_button_pressed(GtkGestureClick* gesture, gint n_press, double x, double y, gpointer user_data);
-    static void on_button_released(GtkGestureClick* gesture, gint n_press, double x, double y, gpointer user_data);
+    static gboolean on_legacy_event(GtkEventControllerLegacy* ctrl, GdkEvent* event, gpointer user_data);
     static gboolean on_scroll(GtkEventControllerScroll* ctrl, double dx, double dy, gpointer user_data);
     static void on_focus_enter(GtkEventControllerFocus* ctrl, gpointer user_data);
     static void on_focus_leave(GtkEventControllerFocus* ctrl, gpointer user_data);
 
+    bool map_coords(double wx, double wy, int& rx, int& ry) const;
+    void cancel_grab_retry();
     void apply_system_grab(bool want_grab);
     uint32_t query_lock_sync_flags() const;
     bool is_release_key(guint keyval, guint keycode) const;
@@ -71,6 +73,9 @@ private:
     bool user_grab_enabled_ = true;
     bool external_grab_control_ = false;
     bool grabbed_ = false;
+    bool want_grab_ = false;
+    guint grab_retry_timer_id_ = 0;
+    int grab_retry_count_ = 0;
 
     // RightCtrl tap detection so Ctrl+C with RightCtrl still works in Windows,
     // while tapping RightCtrl alone releases/re-captures the keyboard grab!
@@ -79,8 +84,7 @@ private:
     std::unordered_set<uint32_t> pressed_scancodes_;
 
     GtkEventController* key_ctrl_ = nullptr;
-    GtkEventController* motion_ctrl_ = nullptr;
-    GtkGesture* click_gesture_ = nullptr;
+    GtkEventController* legacy_ctrl_ = nullptr;
     GtkEventController* scroll_ctrl_ = nullptr;
     GtkEventController* focus_ctrl_ = nullptr;
 };
