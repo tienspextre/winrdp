@@ -68,6 +68,7 @@ struct ConnectionProfile {
     std::string username;
     std::string domain;
     bool save_password = true;
+    bool remember_username = true;
 
     // Display
     DisplayMode display_mode = DisplayMode::Fullscreen;
@@ -78,6 +79,7 @@ struct ConnectionProfile {
     uint32_t scale_factor = 100; // 100 = auto/1x, 125, 150, 200
     std::vector<int32_t> selected_monitors; // empty = all in MultiMonitor or auto/primary in Fullscreen
     ConnectionBarMode connection_bar_mode = ConnectionBarMode::AutoHide;
+    bool connection_bar_hide_hover = false;
     std::string bar_toggle_shortcut = "Ctrl+Alt+Home";
     std::string grab_release_key = "RightCtrl";
 
@@ -141,10 +143,25 @@ public:
     std::vector<std::string> groups() const;
     const std::string& file_path() const { return file_path_; }
 
+    const std::string& last_username() const { return last_username_; }
+    const std::string& last_domain() const { return last_domain_; }
+    void set_last_credentials(std::string username, std::string domain);
+
 private:
     std::string file_path_;
     std::vector<ConnectionProfile> profiles_;
+    std::string last_username_;
+    std::string last_domain_;
 };
+
+struct NormalizedCredentials {
+    std::string username;
+    std::string domain;
+};
+
+NormalizedCredentials normalize_rdp_credentials(const std::string& raw_username,
+                                                const std::string& raw_domain);
+bool is_ip_literal(const std::string& host);
 
 // Enum string helpers for JSON / UI / diagnostics
 const char* to_string(ConnectionBarMode m);

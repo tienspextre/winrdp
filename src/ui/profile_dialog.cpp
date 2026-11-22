@@ -30,6 +30,7 @@ struct ProfileDialogState {
     GtkWidget* user_row = nullptr;
     GtkWidget* domain_row = nullptr;
     GtkWidget* pass_row = nullptr;
+    GtkWidget* remember_user_row = nullptr;
     GtkWidget* save_pass_row = nullptr;
 
     // Display
@@ -40,7 +41,8 @@ struct ProfileDialogState {
     GtkWidget* dyn_res_row = nullptr;
     GtkWidget* smart_size_row = nullptr;
     GtkWidget* scale_row = nullptr;
-    GtkWidget* bar_mode_row = nullptr;
+    GtkWidget* bar_pin_row = nullptr;
+    GtkWidget* bar_hide_row = nullptr;
     std::vector<MonitorInfo> detected_monitors;
     GtkWidget* mon_group = nullptr;
     GtkWidget* use_all_mons_row = nullptr;
@@ -152,8 +154,12 @@ ConnectionProfile collect_profile(ProfileDialogState* st) {
     p.favorite = adw_switch_row_get_active(ADW_SWITCH_ROW(st->fav_row)) == TRUE;
     p.hostname = gtk_editable_get_text(GTK_EDITABLE(st->host_row));
     p.port = static_cast<uint16_t>(adw_spin_row_get_value(ADW_SPIN_ROW(st->port_row)));
-    p.username = gtk_editable_get_text(GTK_EDITABLE(st->user_row));
-    p.domain = gtk_editable_get_text(GTK_EDITABLE(st->domain_row));
+    const auto norm = normalize_rdp_credentials(
+        gtk_editable_get_text(GTK_EDITABLE(st->user_row)),
+        gtk_editable_get_text(GTK_EDITABLE(st->domain_row)));
+    p.username = norm.username;
+    p.domain = norm.domain;
+    p.remember_username = adw_switch_row_get_active(ADW_SWITCH_ROW(st->remember_user_row)) == TRUE;
     p.save_password = adw_switch_row_get_active(ADW_SWITCH_ROW(st->save_pass_row)) == TRUE;
     p.runtime_password = gtk_editable_get_text(GTK_EDITABLE(st->pass_row));
 
@@ -167,8 +173,11 @@ ConnectionProfile collect_profile(ProfileDialogState* st) {
     guint sidx = adw_combo_row_get_selected(ADW_COMBO_ROW(st->scale_row));
     p.scale_factor = kScales[std::min<guint>(sidx, 4)];
 
-    p.connection_bar_mode = static_cast<ConnectionBarMode>(
-        adw_combo_row_get_selected(ADW_COMBO_ROW(st->bar_mode_row)));
+    const bool bar_pin = adw_switch_row_get_active(ADW_SWITCH_ROW(st->bar_pin_row)) == TRUE;
+    const bool bar_hide = adw_switch_row_get_active(ADW_SWITCH_ROW(st->bar_hide_row)) == TRUE;
+    p.connection_bar_hide_hover = bar_hide;
+    p.connection_bar_mode = bar_pin ? ConnectionBarMode::Pinned
+                                    : (bar_hide ? ConnectionBarMode::Hidden : ConnectionBarMode::AutoHide);
 
     p.selected_monitors.clear();
     if (p.display_mode == DisplayMode::MultiMonitor) {
@@ -249,7 +258,8 @@ void show_profile_dialog(GtkWindow* parent,
     st->win = ADW_WINDOW(adw_window_new());
     gtk_window_set_title(GTK_WINDOW(st->win),
                          is_new ? "New Connection" : ("Edit: " + st->profile.display_title()).c_str());
-    gtk_window_set_default_size(GTK_WINDOW(st->win), 660, 620);
+    gtk_window_set_default_size(GTK_WINDOW(st->win), 780, 660);
+    gtk_widget_set_size_request(GTK_WIDGET(st->win), 720, 560);
     gtk_window_set_modal(GTK_WINDOW(st->win), TRUE);
     if (parent) gtk_window_set_transient_for(GTK_WINDOW(st->win), parent);
 
@@ -267,17 +277,24 @@ void show_profile_dialog(GtkWindow* parent,
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), cancel_btn);
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), save_btn);
 
-    GtkWidget* stack = adw_view_stack_new();
-    GtkWidget* switcher = adw_view_switcher_bar_new();
-    adw_view_switcher_bar_set_stack(ADW_VIEW_SWITCHER_BAR(switcher), ADW_VIEW_STACK(stack));
-    adw_view_switcher_bar_set_reveal(ADW_VIEW_SWITCHER_BAR(switcher), TRUE);
+    AdwWindowTitle* win_title = ADW_WINDOW_TITLE(adw_window_title_new(
+        is_new ? "New Connection" : "Edit Connection",
+        is_new ? "Configure remote desktop profile" : st->profile.display_title().c_str()));
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(win_title));
 
+    GtkWidget* stack = adw_view_stack_new();
+
+    GtkWidget* switcher_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(switcher_bar, "winrdp-profile-tabs-bar");
     GtkWidget* top_switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(top_switcher), ADW_VIEW_STACK(stack));
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(top_switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
-    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), top_switcher);
+    gtk_widget_set_halign(top_switcher, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(top_switcher, TRUE);
+    gtk_box_append(GTK_BOX(switcher_bar), top_switcher);
 
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), switcher_bar);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), stack);
 
     // ---- Tab 1: General ----
@@ -323,16 +340,33 @@ void show_profile_dialog(GtkWindow* parent,
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(st->pass_row), "Password");
     gtk_editable_set_text(GTK_EDITABLE(st->pass_row), st->profile.runtime_password.c_str());
 
+    st->remember_user_row = make_switch_row(
+        "Remember Last Username",
+        "Save last username & domain used on connect (without saving password)",
+        st->profile.remember_username);
+
     st->save_pass_row = make_switch_row(
         "Save Password in GNOME Keyring",
         "Encrypted via libsecret — never stored in plaintext JSON",
         st->profile.save_password);
+
+    g_signal_connect_object(
+        st->save_pass_row,
+        "notify::active",
+        G_CALLBACK(+[](GObject* obj, GParamSpec*, gpointer user_data) {
+            if (adw_switch_row_get_active(ADW_SWITCH_ROW(obj)) == TRUE) {
+                adw_switch_row_set_active(ADW_SWITCH_ROW(user_data), TRUE);
+            }
+        }),
+        st->remember_user_row,
+        G_CONNECT_DEFAULT);
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->host_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->port_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->user_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->domain_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->pass_row);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->remember_user_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g1b), st->save_pass_row);
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(p1), ADW_PREFERENCES_GROUP(g1b));
 
@@ -395,17 +429,17 @@ void show_profile_dialog(GtkWindow* parent,
     else if (st->profile.scale_factor >= 200) scale_idx = 4;
     st->scale_row = make_combo_row("Remote Windows DPI Scaling", nullptr, scales, scale_idx);
 
-    const char* bar_modes[] = {
-        "Auto-hide (Slide down on top hover — Windows mstsc style)",
-        "Pinned (Always visible)",
-        "Completely Hidden (Toggle via Ctrl+Alt+Home)",
-        nullptr
-    };
-    st->bar_mode_row = make_combo_row(
-        "Connection Bar",
-        "Controls the top floating mstsc-style status bar",
-        bar_modes,
-        static_cast<guint>(st->profile.connection_bar_mode));
+    const bool bar_pinned = (st->profile.connection_bar_mode == ConnectionBarMode::Pinned);
+    const bool bar_hide = st->profile.connection_bar_hide_hover ||
+                          (st->profile.connection_bar_mode == ConnectionBarMode::Hidden);
+    st->bar_pin_row = make_switch_row(
+        "Pin Connection Bar",
+        "Always keep the Connection Bar visible in fullscreen",
+        bar_pinned);
+    st->bar_hide_row = make_switch_row(
+        "Hide Connection Bar (Hotkey-Only)",
+        "Disable top-edge hover reveal when unpinned; show via Ctrl+Alt+Home",
+        bar_hide);
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->disp_mode_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->res_preset_row);
@@ -414,7 +448,8 @@ void show_profile_dialog(GtkWindow* parent,
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->dyn_res_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->smart_size_row);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->scale_row);
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->bar_mode_row);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->bar_pin_row);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(g2), st->bar_hide_row);
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(p2), ADW_PREFERENCES_GROUP(g2));
 
     // Monitors sub-group

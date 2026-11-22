@@ -6,10 +6,12 @@ namespace winrdp {
 
 ConnectionBar::ConnectionBar(std::string title,
                              ConnectionBarMode initial_mode,
+                             bool initial_hide_hover,
                              ConnectionBarCallbacks callbacks)
     : title_(std::move(title)),
-      mode_(initial_mode),
-      callbacks_(std::move(callbacks)) {
+      callbacks_(std::move(callbacks)),
+      pinned_(initial_mode == ConnectionBarMode::Pinned),
+      hide_hover_(initial_hide_hover || initial_mode == ConnectionBarMode::Hidden) {
     // Transparent 380x4px top-center trigger strip (active only in AutoHide mode)
     trigger_strip_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_size_request(trigger_strip_, 380, 4);
@@ -80,7 +82,7 @@ ConnectionBar::ConnectionBar(std::string title,
         G_CALLBACK(+[](GtkEventControllerMotion*, double, double, gpointer data) {
             auto* self = static_cast<ConnectionBar*>(data);
             self->pointer_in_trigger_ = true;
-            if (self->mode_ == ConnectionBarMode::AutoHide) {
+            if (!self->pinned_ && !self->hide_hover_) {
                 self->schedule_hover_reveal();
             }
         }),
@@ -91,7 +93,7 @@ ConnectionBar::ConnectionBar(std::string title,
         G_CALLBACK(+[](GtkEventControllerMotion*, gpointer data) {
             auto* self = static_cast<ConnectionBar*>(data);
             self->pointer_in_trigger_ = false;
-            if (self->mode_ == ConnectionBarMode::AutoHide && !self->pointer_in_bar_) {
+            if (!self->pinned_ && !self->hide_hover_ && !self->pointer_in_bar_) {
                 self->schedule_hide();
             }
         }),
@@ -109,6 +111,10 @@ ConnectionBar::ConnectionBar(std::string title,
                 g_source_remove(self->hide_timer_id_);
                 self->hide_timer_id_ = 0;
             }
+            if (self->hotkey_idle_timer_id_ != 0) {
+                g_source_remove(self->hotkey_idle_timer_id_);
+                self->hotkey_idle_timer_id_ = 0;
+            }
         }),
         this);
     g_signal_connect(
@@ -117,7 +123,7 @@ ConnectionBar::ConnectionBar(std::string title,
         G_CALLBACK(+[](GtkEventControllerMotion*, gpointer data) {
             auto* self = static_cast<ConnectionBar*>(data);
             self->pointer_in_bar_ = false;
-            if (self->mode_ == ConnectionBarMode::AutoHide || self->temp_revealed_) {
+            if (!self->pinned_ && (!self->pointer_in_trigger_ || self->hide_hover_)) {
                 self->schedule_hide();
             }
         }),
@@ -130,11 +136,11 @@ ConnectionBar::ConnectionBar(std::string title,
         "clicked",
         G_CALLBACK(+[](GtkButton*, gpointer data) {
             auto* self = static_cast<ConnectionBar*>(data);
-            ConnectionBarMode next = (self->mode_ == ConnectionBarMode::Pinned)
-                                         ? ConnectionBarMode::AutoHide
-                                         : ConnectionBarMode::Pinned;
-            self->set_mode(next);
-            if (self->callbacks_.on_mode_changed) self->callbacks_.on_mode_changed(next);
+            const bool next_pinned = !self->pinned_;
+            self->set_state(next_pinned, self->hide_hover_, !next_pinned && !self->hide_hover_);
+            if (self->callbacks_.on_mode_changed) {
+                self->callbacks_.on_mode_changed(self->mode(), self->hide_hover_);
+            }
         }),
         this);
 
@@ -170,9 +176,10 @@ ConnectionBar::ConnectionBar(std::string title,
         "clicked",
         G_CALLBACK(+[](GtkButton*, gpointer data) {
             auto* self = static_cast<ConnectionBar*>(data);
-            self->set_mode(ConnectionBarMode::Hidden);
+            const bool next_hide = !self->hide_hover_;
+            self->set_state(self->pinned_, next_hide, !self->pinned_ && !next_hide);
             if (self->callbacks_.on_mode_changed) {
-                self->callbacks_.on_mode_changed(ConnectionBarMode::Hidden);
+                self->callbacks_.on_mode_changed(self->mode(), self->hide_hover_);
             }
         }),
         this);
@@ -234,13 +241,19 @@ void ConnectionBar::cancel_timers() {
         g_source_remove(hide_timer_id_);
         hide_timer_id_ = 0;
     }
+    if (hotkey_idle_timer_id_ != 0) {
+        g_source_remove(hotkey_idle_timer_id_);
+        hotkey_idle_timer_id_ = 0;
+    }
 }
 
 void ConnectionBar::set_enabled(bool enabled) {
     enabled_ = enabled;
     if (!enabled_) {
         cancel_timers();
-        temp_revealed_ = false;
+        hotkey_revealed_ = false;
+        pointer_in_trigger_ = false;
+        pointer_in_bar_ = false;
         if (trigger_strip_) {
             gtk_widget_set_visible(trigger_strip_, FALSE);
             gtk_widget_set_can_target(trigger_strip_, FALSE);
@@ -258,60 +271,74 @@ void ConnectionBar::set_enabled(bool enabled) {
 }
 
 void ConnectionBar::set_mode(ConnectionBarMode mode) {
-    mode_ = mode;
-    temp_revealed_ = false;
+    set_state(mode == ConnectionBarMode::Pinned, mode == ConnectionBarMode::Hidden, false);
+}
+
+void ConnectionBar::set_state(bool pinned, bool hide_hover, bool preserve_reveal_if_hovered) {
+    pinned_ = pinned;
+    hide_hover_ = hide_hover;
+    hotkey_revealed_ = false;
     cancel_timers();
     if (enabled_) {
-        apply_mode_state();
+        apply_mode_state(preserve_reveal_if_hovered && pointer_in_bar_);
     }
 }
 
 void ConnectionBar::toggle_visibility_hotkey() {
-    if (!enabled_) return;
+    if (!enabled_ || pinned_) return;
     cancel_timers();
-    if (mode_ == ConnectionBarMode::Hidden) {
-        temp_revealed_ = !temp_revealed_;
-        gtk_revealer_set_reveal_child(revealer_, temp_revealed_ ? TRUE : FALSE);
-        return;
-    }
-    if (mode_ == ConnectionBarMode::Pinned) {
-        set_mode(ConnectionBarMode::Hidden);
-        if (callbacks_.on_mode_changed) callbacks_.on_mode_changed(ConnectionBarMode::Hidden);
-        return;
-    }
-    // AutoHide: toggle current reveal or hide completely
     if (is_revealed()) {
+        hotkey_revealed_ = false;
         gtk_revealer_set_reveal_child(revealer_, FALSE);
     } else {
+        hotkey_revealed_ = true;
         gtk_revealer_set_reveal_child(revealer_, TRUE);
+        schedule_hotkey_auto_hide();
     }
 }
 
 void ConnectionBar::apply_mode_state(bool force_reveal) {
     if (!enabled_) return;
-    if (mode_ == ConnectionBarMode::Pinned) {
+
+    if (pinned_) {
         gtk_widget_add_css_class(bar_box_, "pinned");
         gtk_widget_add_css_class(pin_btn_, "active");
+        gtk_widget_set_tooltip_text(pin_btn_, "Unpin Connection Bar");
+    } else {
+        gtk_widget_remove_css_class(bar_box_, "pinned");
+        gtk_widget_remove_css_class(pin_btn_, "active");
+        gtk_widget_set_tooltip_text(pin_btn_, "Pin Connection Bar (Always Visible)");
+    }
+
+    if (hide_hover_) {
+        gtk_widget_add_css_class(hide_btn_, "active");
+        gtk_widget_set_tooltip_text(
+            hide_btn_,
+            pinned_ ? "Hotkey-Only Hide Armed (Unpin to hide; then use Ctrl+Alt+Home)"
+                    : "Disable Hotkey-Only Hide (Re-enable top-edge hover)");
+    } else {
+        gtk_widget_remove_css_class(hide_btn_, "active");
+        gtk_widget_set_tooltip_text(hide_btn_, "Hide Connection Bar (Hotkey-Only via Ctrl+Alt+Home)");
+    }
+
+    if (pinned_) {
         gtk_widget_set_visible(trigger_strip_, FALSE);
         gtk_widget_set_can_target(trigger_strip_, FALSE);
         gtk_revealer_set_reveal_child(revealer_, TRUE);
-    } else if (mode_ == ConnectionBarMode::AutoHide) {
-        gtk_widget_remove_css_class(bar_box_, "pinned");
-        gtk_widget_remove_css_class(pin_btn_, "active");
+    } else if (!hide_hover_) {
         gtk_widget_set_visible(trigger_strip_, TRUE);
         gtk_widget_set_can_target(trigger_strip_, TRUE);
-        gtk_revealer_set_reveal_child(revealer_, force_reveal ? TRUE : FALSE);
-    } else { // Hidden (displayconnectionbar:i:0)
-        gtk_widget_remove_css_class(bar_box_, "pinned");
-        gtk_widget_remove_css_class(pin_btn_, "active");
+        gtk_revealer_set_reveal_child(revealer_, (force_reveal || hotkey_revealed_) ? TRUE : FALSE);
+    } else {
+        pointer_in_trigger_ = false;
         gtk_widget_set_visible(trigger_strip_, FALSE);
         gtk_widget_set_can_target(trigger_strip_, FALSE);
-        gtk_revealer_set_reveal_child(revealer_, temp_revealed_ ? TRUE : FALSE);
+        gtk_revealer_set_reveal_child(revealer_, (force_reveal || hotkey_revealed_) ? TRUE : FALSE);
     }
 }
 
 void ConnectionBar::schedule_hover_reveal() {
-    if (!enabled_) return;
+    if (!enabled_ || pinned_ || hide_hover_) return;
     if (hide_timer_id_ != 0) {
         g_source_remove(hide_timer_id_);
         hide_timer_id_ = 0;
@@ -322,7 +349,7 @@ void ConnectionBar::schedule_hover_reveal() {
         +[](gpointer data) -> gboolean {
             auto* self = static_cast<ConnectionBar*>(data);
             self->reveal_timer_id_ = 0;
-            if (self->pointer_in_trigger_ && self->mode_ == ConnectionBarMode::AutoHide) {
+            if (self->enabled_ && self->pointer_in_trigger_ && !self->pinned_ && !self->hide_hover_) {
                 gtk_revealer_set_reveal_child(self->revealer_, TRUE);
             }
             return G_SOURCE_REMOVE;
@@ -343,13 +370,31 @@ void ConnectionBar::schedule_hide() {
         +[](gpointer data) -> gboolean {
             auto* self = static_cast<ConnectionBar*>(data);
             self->hide_timer_id_ = 0;
-            if (!self->pointer_in_bar_ && !self->pointer_in_trigger_) {
-                if (self->mode_ == ConnectionBarMode::AutoHide) {
-                    gtk_revealer_set_reveal_child(self->revealer_, FALSE);
-                } else if (self->mode_ == ConnectionBarMode::Hidden && self->temp_revealed_) {
-                    self->temp_revealed_ = false;
-                    gtk_revealer_set_reveal_child(self->revealer_, FALSE);
-                }
+            if (!self->enabled_ || self->pinned_) {
+                return G_SOURCE_REMOVE;
+            }
+            const bool trigger_blocks = !self->hide_hover_ && self->pointer_in_trigger_;
+            if (!self->pointer_in_bar_ && !trigger_blocks) {
+                self->hotkey_revealed_ = false;
+                gtk_revealer_set_reveal_child(self->revealer_, FALSE);
+            }
+            return G_SOURCE_REMOVE;
+        },
+        this);
+}
+
+void ConnectionBar::schedule_hotkey_auto_hide() {
+    if (hotkey_idle_timer_id_ != 0) {
+        g_source_remove(hotkey_idle_timer_id_);
+    }
+    hotkey_idle_timer_id_ = g_timeout_add(
+        4000,
+        +[](gpointer data) -> gboolean {
+            auto* self = static_cast<ConnectionBar*>(data);
+            self->hotkey_idle_timer_id_ = 0;
+            if (self->enabled_ && !self->pinned_ && !self->pointer_in_bar_ && self->hotkey_revealed_) {
+                self->hotkey_revealed_ = false;
+                gtk_revealer_set_reveal_child(self->revealer_, FALSE);
             }
             return G_SOURCE_REMOVE;
         },

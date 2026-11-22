@@ -12,7 +12,7 @@
 namespace winrdp {
 
 struct ConnectionBarCallbacks {
-    std::function<void(ConnectionBarMode mode)> on_mode_changed;
+    std::function<void(ConnectionBarMode mode, bool hide_hover)> on_mode_changed;
     std::function<void()> on_toggle_grab;
     std::function<void()> on_send_cad;
     std::function<void()> on_toggle_smart_sizing;
@@ -26,6 +26,7 @@ class ConnectionBar {
 public:
     ConnectionBar(std::string title,
                   ConnectionBarMode initial_mode,
+                  bool initial_hide_hover,
                   ConnectionBarCallbacks callbacks);
     ~ConnectionBar();
 
@@ -40,7 +41,13 @@ public:
     bool is_enabled() const { return enabled_; }
 
     void set_mode(ConnectionBarMode mode);
-    ConnectionBarMode mode() const { return mode_; }
+    void set_state(bool pinned, bool hide_hover, bool preserve_reveal_if_hovered = false);
+    ConnectionBarMode mode() const {
+        if (pinned_) return ConnectionBarMode::Pinned;
+        return hide_hover_ ? ConnectionBarMode::Hidden : ConnectionBarMode::AutoHide;
+    }
+    bool is_pinned() const { return pinned_; }
+    bool is_hide_hover() const { return hide_hover_; }
 
     // Used by Ctrl+Alt+Home / Ctrl+Alt+Pause hotkey
     void toggle_visibility_hotkey();
@@ -58,10 +65,10 @@ private:
     void apply_mode_state(bool force_reveal = false);
     void schedule_hover_reveal();
     void schedule_hide();
+    void schedule_hotkey_auto_hide();
     void cancel_timers();
 
     std::string title_;
-    ConnectionBarMode mode_;
     ConnectionBarCallbacks callbacks_;
 
     GtkWidget* trigger_strip_ = nullptr;
@@ -82,11 +89,14 @@ private:
     GtkWidget* close_btn_ = nullptr;
 
     bool enabled_ = true;
+    bool pinned_ = false;
+    bool hide_hover_ = false;
     bool pointer_in_trigger_ = false;
     bool pointer_in_bar_ = false;
-    bool temp_revealed_ = false;
+    bool hotkey_revealed_ = false;
     guint reveal_timer_id_ = 0;
     guint hide_timer_id_ = 0;
+    guint hotkey_idle_timer_id_ = 0;
 };
 
 } // namespace winrdp

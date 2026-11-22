@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string_view>
 #include <unistd.h>
 
@@ -36,6 +37,18 @@ uint64_t steady_ms() {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
+}
+
+bool has_kerberos_config() {
+    auto non_empty_env = [](const char* name) {
+        const char* v = std::getenv(name);
+        return v != nullptr && v[0] != '\0';
+    };
+    if (non_empty_env("KRB5_CONFIG") || non_empty_env("KRB5CCNAME")) {
+        return true;
+    }
+    std::error_code ec;
+    return std::filesystem::exists("/etc/krb5.conf", ec);
 }
 
 void extract_pem_details(const char* pem_or_fp, DWORD flags, CertPromptInfo& info, bool is_old) {
@@ -200,14 +213,20 @@ bool RdpSession::configure_settings() {
     bool ok = true;
     ok &= freerdp_settings_set_string(s, FreeRDP_ServerHostname, profile_.hostname.c_str()) == TRUE;
     ok &= freerdp_settings_set_uint32(s, FreeRDP_ServerPort, profile_.port) == TRUE;
-    if (!profile_.username.empty()) {
-        ok &= freerdp_settings_set_string(s, FreeRDP_Username, profile_.username.c_str()) == TRUE;
+    const auto cred = normalize_rdp_credentials(profile_.username, profile_.domain);
+    if (!cred.username.empty()) {
+        ok &= freerdp_settings_set_string(s, FreeRDP_Username, cred.username.c_str()) == TRUE;
     }
-    if (!profile_.domain.empty()) {
-        ok &= freerdp_settings_set_string(s, FreeRDP_Domain, profile_.domain.c_str()) == TRUE;
+    if (!cred.domain.empty()) {
+        ok &= freerdp_settings_set_string(s, FreeRDP_Domain, cred.domain.c_str()) == TRUE;
     }
     if (!profile_.runtime_password.empty()) {
         ok &= freerdp_settings_set_string(s, FreeRDP_Password, profile_.runtime_password.c_str()) == TRUE;
+    }
+    if (is_ip_literal(profile_.hostname) ||
+        (!has_kerberos_config() && cred.domain.find('.') == std::string::npos)) {
+        ok &= freerdp_settings_set_string(
+                  s, FreeRDP_AuthenticationPackageList, "!kerberos,!u2u,ntlm") == TRUE;
     }
 
     char hostbuf[128] = {};
@@ -252,13 +271,15 @@ bool RdpSession::configure_settings() {
         ok &= freerdp_settings_set_bool(s, FreeRDP_GatewayUseSameCredentials,
                                         profile_.gateway_use_same_creds ? TRUE : FALSE) == TRUE;
         if (!profile_.gateway_use_same_creds) {
-            if (!profile_.gateway_username.empty()) {
+            const auto gw_cred =
+                normalize_rdp_credentials(profile_.gateway_username, profile_.gateway_domain);
+            if (!gw_cred.username.empty()) {
                 ok &= freerdp_settings_set_string(s, FreeRDP_GatewayUsername,
-                                                  profile_.gateway_username.c_str()) == TRUE;
+                                                  gw_cred.username.c_str()) == TRUE;
             }
-            if (!profile_.gateway_domain.empty()) {
+            if (!gw_cred.domain.empty()) {
                 ok &= freerdp_settings_set_string(s, FreeRDP_GatewayDomain,
-                                                  profile_.gateway_domain.c_str()) == TRUE;
+                                                  gw_cred.domain.c_str()) == TRUE;
             }
             if (!profile_.runtime_gateway_password.empty()) {
                 ok &= freerdp_settings_set_string(s, FreeRDP_GatewayPassword,
@@ -586,18 +607,25 @@ BOOL RdpSession::on_authenticate_ex(freerdp* instance, char** username, char** p
     info.domain = (domain && *domain) ? *domain : self->profile_.domain;
     info.password = (password && *password) ? *password : "";
     info.save_password = self->profile_.save_password;
+    info.remember_username = self->profile_.remember_username;
 
     if (!self->callbacks_.on_authenticate(info)) {
         return FALSE;
     }
 
+    const auto norm = normalize_rdp_credentials(info.username, info.domain);
     auto replace_cstr = [](char** dst, const std::string& val) {
         if (!dst) return;
         free(*dst);
         *dst = strdup(val.c_str());
     };
-    replace_cstr(username, info.username);
-    replace_cstr(domain, info.domain);
+    auto replace_optional_cstr = [](char** dst, const std::string& val) {
+        if (!dst) return;
+        free(*dst);
+        *dst = val.empty() ? nullptr : strdup(val.c_str());
+    };
+    replace_cstr(username, norm.username);
+    replace_optional_cstr(domain, norm.domain);
     replace_cstr(password, info.password);
     return TRUE;
 }

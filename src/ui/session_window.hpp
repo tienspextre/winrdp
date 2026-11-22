@@ -37,6 +37,7 @@ public:
 
     void present();
     void present_and_focus();
+    void apply_fullscreen_state(bool enter);
     void close();
     bool is_closed() const { return closed_; }
 
@@ -52,6 +53,13 @@ public:
     int header_bar_height() const;
 
     void show_toast(const std::string& text, guint duration_ms = 1800);
+
+    bool query_client_and_workarea_x11(int& client_x,
+                                       int& client_y,
+                                       int& work_x,
+                                       int& work_y,
+                                       int& work_w,
+                                       int& work_h) const;
 
     static void apply_skip_taskbar_hint(GtkWindow* win);
 
@@ -79,9 +87,10 @@ private:
     void start_rdp_session();
     void toggle_fullscreen();
     void toggle_multimon();
-    void apply_fullscreen_state(bool enter);
     void sync_monitor_windows(const VirtualDesktopLayout& layout, bool enter_fullscreen);
     void destroy_secondary_panes();
+    void schedule_windowed_reposition(guint delay_ms);
+    void reposition_windowed_in_workarea();
     void schedule_dynamic_resize(int pixel_w, int pixel_h);
     void update_status_banner(SessionState state, const std::string& msg, uint32_t attempt, uint32_t max_attempts);
 
@@ -185,6 +194,10 @@ private:
     GListModel* monitor_list_model_ = nullptr;
     gulong monitors_changed_handler_ = 0;
     guint hotplug_timer_id_ = 0;
+
+    // Post-unfullscreen workarea placement
+    guint reposition_timer_id_ = 0;
+    bool pending_unfullscreen_reposition_ = false;
 };
 
 } // namespace winrdp

@@ -30,7 +30,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.1.4"
+#define WINRDP_VERSION "1.1.5"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -56,6 +56,10 @@ constexpr const char* kFallbackCss = R"CSS(
     background-color: alpha(@accent_bg_color, 0.10);
     border-bottom: 1px solid alpha(@borders, 0.85);
     padding: 6px 14px;
+}
+.winrdp-profile-tabs-bar {
+    padding: 4px 12px 6px 12px;
+    border-bottom: 1px solid alpha(@borders, 0.7);
 }
 )CSS";
 
@@ -187,12 +191,16 @@ void Application::load_css() {
 }
 
 void Application::launch_session(ConnectionProfile profile) {
-    if (!profile.id.empty() && profile.runtime_password.empty()) {
-        if (auto pw = Keyring::lookup_secret(profile.id, "password")) {
-            profile.runtime_password = *pw;
+    if (!profile.id.empty()) {
+        if (profile.save_password && profile.runtime_password.empty()) {
+            if (auto pw = Keyring::lookup_secret(profile.id, "password")) {
+                profile.runtime_password = *pw;
+            }
         }
-        if (auto gpw = Keyring::lookup_secret(profile.id, "gateway_password")) {
-            profile.runtime_gateway_password = *gpw;
+        if (profile.runtime_gateway_password.empty()) {
+            if (auto gpw = Keyring::lookup_secret(profile.id, "gateway_password")) {
+                profile.runtime_gateway_password = *gpw;
+            }
         }
     }
 
@@ -205,14 +213,28 @@ void Application::launch_session(ConnectionProfile profile) {
             profile.display_mode = DisplayMode::MultiMonitor;
         }
     }
-    if (cli_.force_no_bar) profile.connection_bar_mode = ConnectionBarMode::Hidden;
-    if (cli_.force_pinned_bar) profile.connection_bar_mode = ConnectionBarMode::Pinned;
+    if (cli_.force_no_bar) {
+        profile.connection_bar_mode = ConnectionBarMode::Hidden;
+        profile.connection_bar_hide_hover = true;
+    }
+    if (cli_.force_pinned_bar) {
+        profile.connection_bar_mode = ConnectionBarMode::Pinned;
+    }
 
+    bool store_dirty = false;
     if (!profile.id.empty() && store_.find_by_id(profile.id)) {
         const auto now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
                                    std::chrono::system_clock::now().time_since_epoch())
                                    .count();
         store_.touch_last_connected(profile.id, now_epoch);
+        store_dirty = true;
+    }
+    if (profile.remember_username && !profile.username.empty()) {
+        const auto norm = normalize_rdp_credentials(profile.username, profile.domain);
+        store_.set_last_credentials(norm.username, norm.domain);
+        store_dirty = true;
+    }
+    if (store_dirty) {
         store_.save();
         if (manager_) manager_->refresh();
     }
@@ -222,8 +244,16 @@ void Application::launch_session(ConnectionProfile profile) {
         std::move(profile),
         SessionWindowCallbacks{
             .on_profile_changed = [this](const ConnectionProfile& updated) {
+                bool dirty = false;
                 if (store_.find_by_id(updated.id)) {
                     store_.upsert(updated);
+                    dirty = true;
+                }
+                if (updated.remember_username && !updated.username.empty()) {
+                    store_.set_last_credentials(updated.username, updated.domain);
+                    dirty = true;
+                }
+                if (dirty) {
                     store_.save();
                     if (manager_) manager_->refresh();
                 }
@@ -325,12 +355,32 @@ int Application::run_smoke_test() {
     right_canvas->bind_framebuffer(&test_fb);
     adw_application_window_set_content(sec_win, right_canvas->widget());
 
-    // Cycle all 3 ConnectionBar modes inside the single GtkOverlay
-    sess_win->connection_bar().set_mode(ConnectionBarMode::Pinned);
-    const bool pinned_ok = sess_win->connection_bar().is_revealed();
-    sess_win->connection_bar().set_mode(ConnectionBarMode::Hidden);
-    const bool hidden_ok = !sess_win->connection_bar().is_revealed();
-    sess_win->connection_bar().set_mode(ConnectionBarMode::AutoHide);
+    // Exercise all 4 ConnectionBar (pin, hide_hover) matrix states + Ctrl+Alt+Home hotkey
+    auto& bar = sess_win->connection_bar();
+    bar.set_state(false, false); // (pin=0, hide=0): AutoHide
+    const bool auto_ok = !bar.is_pinned() && !bar.is_hide_hover() && !bar.is_revealed();
+
+    bar.set_state(true, false); // (pin=1, hide=0): Pinned
+    const bool pinned_ok = bar.is_pinned() && !bar.is_hide_hover() && bar.is_revealed();
+
+    bar.set_state(false, true); // (pin=0, hide=1): Hide (hotkey-only)
+    const bool hidden_init_ok = !bar.is_pinned() && bar.is_hide_hover() && !bar.is_revealed();
+    bar.toggle_visibility_hotkey();
+    const bool hidden_hotkey_show_ok = bar.is_revealed();
+    bar.toggle_visibility_hotkey();
+    const bool hidden_hotkey_hide_ok = !bar.is_revealed();
+
+    bar.set_state(true, true); // (pin=1, hide=1): Pinned + Hide -> Always Visible!
+    const bool pinned_hide_ok = bar.is_pinned() && bar.is_hide_hover() && bar.is_revealed();
+    bar.toggle_visibility_hotkey(); // Hotkey must NOT unpin or hide a pinned bar
+    const bool pinned_hide_hotkey_ok = bar.is_revealed();
+    bar.set_state(false, bar.is_hide_hover()); // Unpin preserves hide=1 -> immediately hides!
+    const bool unpin_to_hidden_ok = !bar.is_pinned() && bar.is_hide_hover() && !bar.is_revealed();
+
+    const bool bar_matrix_ok = auto_ok && pinned_ok && hidden_init_ok &&
+                               hidden_hotkey_show_ok && hidden_hotkey_hide_ok &&
+                               pinned_hide_ok && pinned_hide_hotkey_ok && unpin_to_hidden_ok;
+    bar.set_state(false, false);
 
     sess_win->present();
     gtk_widget_realize(GTK_WIDGET(sec_win));
@@ -382,6 +432,16 @@ int Application::run_smoke_test() {
 
     // Pump GLib main context until both primary & secondary GtkGLAreas render >= 1 pass and WM sets state (max 2s)
     GMainContext* ctx = g_main_context_default();
+    auto pump_for = [&](int ms) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        while (std::chrono::steady_clock::now() < end) {
+            while (g_main_context_pending(ctx)) {
+                g_main_context_iteration(ctx, FALSE);
+            }
+            g_usleep(10000);
+        }
+    };
+
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
         while (g_main_context_pending(ctx)) {
@@ -407,6 +467,41 @@ int Application::run_smoke_test() {
                                 right_canvas->dirty_upload_count() >= 1 &&
                                 map_ok;
     const bool skip_taskbar_ok = has_skip_taskbar(GTK_WINDOW(sec_win));
+
+    // Verify fullscreen -> unfullscreen places client titlebar inside monitor workarea (never clipped at Y=0)
+    bool unfullscreen_pos_ok = true;
+    int cx = 0, cy = 0, wx = 0, wy = 0, ww = 0, wh = 0;
+    if (sess_win->query_client_and_workarea_x11(cx, cy, wx, wy, ww, wh)) {
+        sess_win->apply_fullscreen_state(true);
+        const auto fs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+        while (std::chrono::steady_clock::now() < fs_deadline) {
+            while (g_main_context_pending(ctx)) {
+                g_main_context_iteration(ctx, FALSE);
+            }
+            if (gtk_window_is_fullscreen(sess_win->gtk_window()) == TRUE) break;
+            g_usleep(10000);
+        }
+        pump_for(60);
+
+        sess_win->apply_fullscreen_state(false);
+        const auto ufs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+        while (std::chrono::steady_clock::now() < ufs_deadline) {
+            while (g_main_context_pending(ctx)) {
+                g_main_context_iteration(ctx, FALSE);
+            }
+            if (gtk_window_is_fullscreen(sess_win->gtk_window()) == FALSE &&
+                sess_win->is_header_bar_visible()) {
+                break;
+            }
+            g_usleep(10000);
+        }
+        // Let delayed reposition timer fire & WM configure settle
+        pump_for(280);
+        if (sess_win->query_client_and_workarea_x11(cx, cy, wx, wy, ww, wh)) {
+            unfullscreen_pos_ok = (cx >= wx && cy >= wy);
+        }
+    }
+
     const bool mgr_ok = gtk_widget_get_realized(GTK_WIDGET(manager_->gtk_window())) == TRUE;
     const bool header_ok = sess_win->is_header_bar_visible() && sess_win->header_bar_height() > 0;
     const char* prgname = g_get_prgname();
@@ -430,8 +525,14 @@ int Application::run_smoke_test() {
     std::cout << "Multi-monitor dual-canvas GL (uploads=" << right_canvas->dirty_upload_count()
               << ", map_rx=" << rx << "): " << (multimon_gl_ok ? "OK" : "FAIL") << "\n";
     std::cout << "Secondary pane skip-taskbar hint: " << (skip_taskbar_ok ? "OK" : "FAIL") << "\n";
-    std::cout << "ConnectionBar overlay modes (Pinned=" << pinned_ok
-              << ", Hidden=" << hidden_ok << "): " << ((pinned_ok && hidden_ok) ? "OK" : "FAIL") << "\n";
+    std::cout << "ConnectionBar 2x2 states (Auto=" << auto_ok
+              << ", Pinned=" << pinned_ok
+              << ", HiddenHotkey=" << (hidden_init_ok && hidden_hotkey_show_ok && hidden_hotkey_hide_ok)
+              << ", PinnedHide=" << (pinned_hide_ok && pinned_hide_hotkey_ok && unpin_to_hidden_ok)
+              << "): " << (bar_matrix_ok ? "OK" : "FAIL") << "\n";
+    std::cout << "Post-unfullscreen placement (client=" << cx << "," << cy
+              << " workarea=" << wx << "," << wy << " " << ww << "x" << wh
+              << "): " << (unfullscreen_pos_ok ? "OK" : "FAIL") << "\n";
     std::cout << "Windowed HeaderBar (visible=" << sess_win->is_header_bar_visible()
               << ", height=" << sess_win->header_bar_height() << "px): "
               << (header_ok ? "OK" : "FAIL") << "\n";
@@ -447,8 +548,9 @@ int Application::run_smoke_test() {
     g_object_unref(app_);
     app_ = nullptr;
 
-    if (!gl_ok || !multimon_gl_ok || !skip_taskbar_ok || !pinned_ok || !hidden_ok || !header_ok ||
-        !identity_ok || !mgr_ok || !RdpSession::has_h264_hwaccel_support()) {
+    if (!gl_ok || !multimon_gl_ok || !skip_taskbar_ok || !bar_matrix_ok ||
+        !unfullscreen_pos_ok || !header_ok || !identity_ok || !mgr_ok ||
+        !RdpSession::has_h264_hwaccel_support()) {
         std::cerr << "SMOKE_TEST_FAIL\n";
         return 1;
     }

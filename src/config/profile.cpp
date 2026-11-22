@@ -1,8 +1,10 @@
 #include "config/profile.hpp"
 
+#include <arpa/inet.h>
 #include <cjson/cJSON.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -109,6 +111,8 @@ ProfileStore::ProfileStore(std::string file_path)
 
 bool ProfileStore::load() {
     profiles_.clear();
+    last_username_.clear();
+    last_domain_.clear();
     std::ifstream in(file_path_, std::ios::binary);
     if (!in.is_open()) {
         return false;
@@ -124,6 +128,11 @@ bool ProfileStore::load() {
     cJSON* root = cJSON_ParseWithLength(content.data(), content.size());
     if (!root) {
         return false;
+    }
+
+    if (cJSON_IsObject(root)) {
+        last_username_ = trim_copy(json_get_str(root, "last_username"));
+        last_domain_ = trim_copy(json_get_str(root, "last_domain"));
     }
 
     const cJSON* arr = cJSON_GetObjectItemCaseSensitive(root, "profiles");
@@ -153,6 +162,7 @@ bool ProfileStore::load() {
             p.username = json_get_str(item, "username");
             p.domain = json_get_str(item, "domain");
             p.save_password = json_get_bool(item, "save_password", true);
+            p.remember_username = json_get_bool(item, "remember_username", true);
 
             p.display_mode = parse_display_mode(json_get_str(item, "display_mode", "Fullscreen"));
             p.width = std::clamp<uint32_t>(json_get_u32(item, "width", 1920), 320, 16384);
@@ -174,6 +184,10 @@ bool ProfileStore::load() {
                 }
             }
             p.connection_bar_mode = parse_bar_mode(json_get_str(item, "connection_bar_mode", "AutoHide"));
+            p.connection_bar_hide_hover = json_get_bool(
+                item,
+                "connection_bar_hide_hover",
+                p.connection_bar_mode == ConnectionBarMode::Hidden);
             p.bar_toggle_shortcut = json_get_str(item, "bar_toggle_shortcut", "Ctrl+Alt+Home");
             p.grab_release_key = json_get_str(item, "grab_release_key", "RightCtrl");
 
@@ -249,6 +263,8 @@ bool ProfileStore::save() const {
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "version", 1);
+    cJSON_AddStringToObject(root, "last_username", last_username_.c_str());
+    cJSON_AddStringToObject(root, "last_domain", last_domain_.c_str());
     cJSON* arr = cJSON_AddArrayToObject(root, "profiles");
 
     for (const auto& prof : profiles_) {
@@ -264,6 +280,7 @@ bool ProfileStore::save() const {
         cJSON_AddStringToObject(o, "username", prof.username.c_str());
         cJSON_AddStringToObject(o, "domain", prof.domain.c_str());
         cJSON_AddBoolToObject(o, "save_password", prof.save_password);
+        cJSON_AddBoolToObject(o, "remember_username", prof.remember_username);
 
         cJSON_AddStringToObject(o, "display_mode", to_string(prof.display_mode));
         cJSON_AddNumberToObject(o, "width", prof.width);
@@ -276,6 +293,7 @@ bool ProfileStore::save() const {
             cJSON_AddItemToArray(sel_mons, cJSON_CreateNumber(midx));
         }
         cJSON_AddStringToObject(o, "connection_bar_mode", to_string(prof.connection_bar_mode));
+        cJSON_AddBoolToObject(o, "connection_bar_hide_hover", prof.connection_bar_hide_hover);
         cJSON_AddStringToObject(o, "bar_toggle_shortcut", prof.bar_toggle_shortcut.c_str());
         cJSON_AddStringToObject(o, "grab_release_key", prof.grab_release_key.c_str());
 
@@ -394,6 +412,67 @@ std::vector<std::string> ProfileStore::groups() const {
         }
     }
     return {unique_groups.begin(), unique_groups.end()};
+}
+
+void ProfileStore::set_last_credentials(std::string username, std::string domain) {
+    last_username_ = trim_copy(std::move(username));
+    last_domain_ = trim_copy(std::move(domain));
+}
+
+NormalizedCredentials normalize_rdp_credentials(const std::string& raw_username,
+                                                const std::string& raw_domain) {
+    std::string u = trim_copy(raw_username);
+    std::string d = trim_copy(raw_domain);
+    while (!d.empty() && (d.back() == '\\' || d.back() == '/')) {
+        d.pop_back();
+    }
+    d = trim_copy(std::move(d));
+
+    auto pos = u.find('\\');
+    if (pos != std::string::npos) {
+        std::string u_dom = trim_copy(u.substr(0, pos));
+        while (!u_dom.empty() && (u_dom.back() == '\\' || u_dom.back() == '/')) {
+            u_dom.pop_back();
+        }
+        u_dom = trim_copy(std::move(u_dom));
+        u = trim_copy(u.substr(pos + 1));
+
+        if (u_dom == ".") {
+            d.clear();
+        } else if (!u_dom.empty()) {
+            const bool same_ci =
+                d.size() == u_dom.size() &&
+                std::equal(d.begin(), d.end(), u_dom.begin(), [](unsigned char a, unsigned char b) {
+                    return std::tolower(a) == std::tolower(b);
+                });
+            if (d.empty() || same_ci) {
+                d = u_dom;
+            }
+        }
+    }
+
+    if (u.find('@') != std::string::npos) {
+        d.clear();
+    }
+
+    return {u, d};
+}
+
+bool is_ip_literal(const std::string& host) {
+    std::string h = trim_copy(host);
+    if (h.empty()) {
+        return false;
+    }
+    if (h.size() >= 2 && h.front() == '[' && h.back() == ']') {
+        h = trim_copy(h.substr(1, h.size() - 2));
+        if (h.empty()) {
+            return false;
+        }
+    }
+    struct in_addr v4 {};
+    struct in6_addr v6 {};
+    return inet_pton(AF_INET, h.c_str(), &v4) == 1 ||
+           inet_pton(AF_INET6, h.c_str(), &v6) == 1;
 }
 
 const char* to_string(ConnectionBarMode m) {

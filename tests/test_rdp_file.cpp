@@ -102,6 +102,20 @@ int main() {
     WINRDP_CHECK(p3.connection_bar_mode == p1.connection_bar_mode);
     WINRDP_CHECK(p3.shared_folders.size() == 2);
 
+    // 4. Pinned + Hide (always visible while pinned, remembers hotkey-only hide on unpin)
+    const std::string pinned_hide_rdp =
+        "full address:s:10.10.10.20\r\n"
+        "displayconnectionbar:i:0\r\n"
+        "pinconnectionbar:i:1\r\n";
+    ConnectionProfile p4;
+    WINRDP_CHECK(parse_rdp_content(pinned_hide_rdp, p4, &err));
+    WINRDP_CHECK(p4.connection_bar_mode == ConnectionBarMode::Pinned);
+    WINRDP_CHECK(p4.connection_bar_hide_hover == true);
+    ConnectionProfile p4_rt;
+    WINRDP_CHECK(parse_rdp_content(export_rdp_content(p4), p4_rt, &err));
+    WINRDP_CHECK(p4_rt.connection_bar_mode == ConnectionBarMode::Pinned);
+    WINRDP_CHECK(p4_rt.connection_bar_hide_hover == true);
+
     std::cout << "test_rdp_file: PASS\n";
     return 0;
 }

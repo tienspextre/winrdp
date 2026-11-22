@@ -32,15 +32,19 @@ int main() {
     p1.port = 3391;
     p1.username = "alice";
     p1.domain = "ACME";
+    p1.save_password = false;
+    p1.remember_username = true;
     p1.runtime_password = "TOP_SECRET_SHOULD_NOT_BE_ON_DISK";
     p1.display_mode = DisplayMode::MultiMonitor;
     p1.selected_monitors = {0, 2};
     p1.connection_bar_mode = ConnectionBarMode::Hidden;
+    p1.connection_bar_hide_hover = true;
     p1.codec = CodecMode::AVC444;
     p1.security = SecurityMode::NLA;
     p1.shared_folders.push_back(SharedFolder{"Downloads", "/home/alice/Downloads", false});
 
     ProfileStore s1(store_file.string());
+    s1.set_last_credentials("tiennd35", "VIETTELGROUP");
     s1.upsert(p1);
     WINRDP_CHECK(s1.save());
 
@@ -55,20 +59,52 @@ int main() {
     ProfileStore s2(store_file.string());
     WINRDP_CHECK(s2.load());
     WINRDP_CHECK(s2.profiles().size() == 1);
+    WINRDP_CHECK(s2.last_username() == "tiennd35");
+    WINRDP_CHECK(s2.last_domain() == "VIETTELGROUP");
     const auto loaded = s2.find_by_id(p1.id);
     WINRDP_CHECK(loaded.has_value());
     WINRDP_CHECK(loaded->name == "Office PC");
     WINRDP_CHECK(loaded->group == "Work");
     WINRDP_CHECK(loaded->favorite == true);
     WINRDP_CHECK(loaded->port == 3391);
+    WINRDP_CHECK(loaded->save_password == false);
+    WINRDP_CHECK(loaded->remember_username == true);
     WINRDP_CHECK(loaded->display_mode == DisplayMode::MultiMonitor);
     WINRDP_CHECK(loaded->selected_monitors.size() == 2 &&
                  loaded->selected_monitors[0] == 0 && loaded->selected_monitors[1] == 2);
     WINRDP_CHECK(loaded->connection_bar_mode == ConnectionBarMode::Hidden);
+    WINRDP_CHECK(loaded->connection_bar_hide_hover == true);
     WINRDP_CHECK(loaded->codec == CodecMode::AVC444);
     WINRDP_CHECK(loaded->shared_folders.size() == 1);
     WINRDP_CHECK(loaded->runtime_password.empty());
     WINRDP_CHECK(s2.groups().size() == 1 && s2.groups()[0] == "Work");
+
+    // Credential normalization (DOMAIN\user, trailing slash, local .\, UPN @)
+    {
+        auto c1 = normalize_rdp_credentials("tiennd35", "VIETTELGROUP");
+        WINRDP_CHECK(c1.username == "tiennd35" && c1.domain == "VIETTELGROUP");
+
+        auto c2 = normalize_rdp_credentials("VIETTELGROUP\\tiennd35", "");
+        WINRDP_CHECK(c2.username == "tiennd35" && c2.domain == "VIETTELGROUP");
+
+        auto c3 = normalize_rdp_credentials("VIETTELGROUP\\tiennd35", "VIETTELGROUP");
+        WINRDP_CHECK(c3.username == "tiennd35" && c3.domain == "VIETTELGROUP");
+
+        auto c4 = normalize_rdp_credentials("  tiennd35 ", " VIETTELGROUP\\ ");
+        WINRDP_CHECK(c4.username == "tiennd35" && c4.domain == "VIETTELGROUP");
+
+        auto c5 = normalize_rdp_credentials(".\\localuser", "VIETTELGROUP");
+        WINRDP_CHECK(c5.username == "localuser" && c5.domain.empty());
+
+        auto c6 = normalize_rdp_credentials("tiennd35@viettelgroup.vn", "VIETTELGROUP");
+        WINRDP_CHECK(c6.username == "tiennd35@viettelgroup.vn" && c6.domain.empty());
+    }
+
+    // IP literal helper
+    WINRDP_CHECK(is_ip_literal("10.0.0.5") == true);
+    WINRDP_CHECK(is_ip_literal("::1") == true);
+    WINRDP_CHECK(is_ip_literal("[::1]") == true);
+    WINRDP_CHECK(is_ip_literal("win11.corp.local") == false);
 
     // Quick connect URI parsing
     ConnectionProfile qc1;

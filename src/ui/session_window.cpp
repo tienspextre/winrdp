@@ -58,6 +58,147 @@ std::pair<int, int> primary_logical_bounds(GdkDisplay* display) {
     return {mon_w, mon_h};
 }
 
+#ifdef GDK_WINDOWING_X11
+bool query_monitor_workarea_x11(GdkDisplay* display,
+                                GdkSurface* surface,
+                                int& out_x,
+                                int& out_y,
+                                int& out_w,
+                                int& out_h,
+                                int& out_scale) {
+    if (!display || !GDK_IS_X11_DISPLAY(display)) return false;
+    Display* xdpy = gdk_x11_display_get_xdisplay(display);
+    if (!xdpy) return false;
+
+    GdkMonitor* mon = nullptr;
+    if (surface) {
+        mon = gdk_display_get_monitor_at_surface(display, surface);
+        if (mon) g_object_ref(mon);
+    }
+    if (!mon) {
+        GListModel* list = gdk_display_get_monitors(display);
+        if (list && g_list_model_get_n_items(list) > 0) {
+            mon = GDK_MONITOR(g_list_model_get_item(list, 0));
+        }
+    }
+
+    int mon_x = 0;
+    int mon_y = 0;
+    int mon_w = 1920;
+    int mon_h = 1080;
+    int scale = 1;
+    if (mon) {
+        GdkRectangle geom{};
+        gdk_monitor_get_geometry(mon, &geom);
+        scale = std::max(1, gdk_monitor_get_scale_factor(mon));
+        mon_x = geom.x * scale;
+        mon_y = geom.y * scale;
+        mon_w = std::max(320, geom.width * scale);
+        mon_h = std::max(200, geom.height * scale);
+        g_object_unref(mon);
+    }
+
+    out_scale = scale;
+    const Window root = DefaultRootWindow(xdpy);
+
+    unsigned long desktop = 0;
+    const Atom cur_desk_atom = XInternAtom(xdpy, "_NET_CURRENT_DESKTOP", True);
+    if (cur_desk_atom != None) {
+        Atom type = None;
+        int format = 0;
+        unsigned long nitems = 0;
+        unsigned long bytes_after = 0;
+        unsigned char* prop = nullptr;
+        if (XGetWindowProperty(xdpy, root, cur_desk_atom, 0, 1, False, XA_CARDINAL,
+                               &type, &format, &nitems, &bytes_after, &prop) == Success &&
+            prop) {
+            if (type == XA_CARDINAL && format == 32 && nitems >= 1) {
+                desktop = reinterpret_cast<const unsigned long*>(prop)[0];
+            }
+            XFree(prop);
+        }
+    }
+
+    bool have_wa = false;
+    int wa_x = mon_x;
+    int wa_y = mon_y;
+    int wa_w = mon_w;
+    int wa_h = mon_h;
+    const Atom wa_atom = XInternAtom(xdpy, "_NET_WORKAREA", True);
+    if (wa_atom != None) {
+        Atom type = None;
+        int format = 0;
+        unsigned long nitems = 0;
+        unsigned long bytes_after = 0;
+        unsigned char* prop = nullptr;
+        if (XGetWindowProperty(xdpy, root, wa_atom, 0, 256, False, XA_CARDINAL,
+                               &type, &format, &nitems, &bytes_after, &prop) == Success &&
+            prop) {
+            if (type == XA_CARDINAL && format == 32 && nitems >= 4) {
+                const unsigned long* vals = reinterpret_cast<const unsigned long*>(prop);
+                const unsigned long base = (desktop * 4 + 3 < nitems) ? (desktop * 4) : 0;
+                wa_x = static_cast<int>(vals[base + 0]);
+                wa_y = static_cast<int>(vals[base + 1]);
+                wa_w = static_cast<int>(vals[base + 2]);
+                wa_h = static_cast<int>(vals[base + 3]);
+                have_wa = (wa_w >= 320 && wa_h >= 200);
+            }
+            XFree(prop);
+        }
+    }
+
+    if (have_wa) {
+        const int ix0 = std::max(mon_x, wa_x);
+        const int iy0 = std::max(mon_y, wa_y);
+        const int ix1 = std::min(mon_x + mon_w, wa_x + wa_w);
+        const int iy1 = std::min(mon_y + mon_h, wa_y + wa_h);
+        if (ix1 - ix0 >= 320 && iy1 - iy0 >= 200) {
+            out_x = ix0;
+            out_y = iy0;
+            out_w = ix1 - ix0;
+            out_h = iy1 - iy0;
+            return true;
+        }
+    }
+
+    // Fallback when _NET_WORKAREA is unavailable or didn't intersect
+    out_x = mon_x;
+    out_y = mon_y + 40 * scale;
+    out_w = mon_w;
+    out_h = std::max(300, mon_h - 80 * scale);
+    return true;
+}
+
+void query_frame_extents_x11(Display* xdpy,
+                             Window xwin,
+                             int& ext_left,
+                             int& ext_right,
+                             int& ext_top,
+                             int& ext_bottom) {
+    ext_left = ext_right = ext_top = ext_bottom = 0;
+    const Atom ext_atom = XInternAtom(xdpy, "_GTK_FRAME_EXTENTS", True);
+    if (ext_atom == None) return;
+
+    Atom type = None;
+    int format = 0;
+    unsigned long nitems = 0;
+    unsigned long bytes_after = 0;
+    unsigned char* prop = nullptr;
+    if (XGetWindowProperty(xdpy, xwin, ext_atom, 0, 4, False, XA_CARDINAL,
+                           &type, &format, &nitems, &bytes_after, &prop) == Success &&
+        prop) {
+        if (type == XA_CARDINAL && format == 32 && nitems >= 4) {
+            const unsigned long* vals = reinterpret_cast<const unsigned long*>(prop);
+            ext_left = static_cast<int>(vals[0]);
+            ext_right = static_cast<int>(vals[1]);
+            ext_top = static_cast<int>(vals[2]);
+            ext_bottom = static_cast<int>(vals[3]);
+        }
+        XFree(prop);
+    }
+}
+#endif
+
 } // namespace
 
 SessionWindow::SessionWindow(GtkApplication* app,
@@ -156,7 +297,7 @@ SessionWindow::SessionWindow(GtkApplication* app,
             if (self->input_) {
                 self->input_->set_fullscreen(fs);
             }
-            if (!fs && self->is_fullscreen_) {
+            if (!fs && (self->is_fullscreen_ || self->pending_unfullscreen_reposition_)) {
                 self->is_fullscreen_ = false;
                 if (self->is_multimon_active_) {
                     self->destroy_secondary_panes();
@@ -166,8 +307,15 @@ SessionWindow::SessionWindow(GtkApplication* app,
                     if (self->bar_) self->bar_->set_multimon(false, 1);
                 }
                 self->update_window_chrome();
+                self->pending_unfullscreen_reposition_ = true;
+                self->schedule_windowed_reposition(80);
             } else if (fs && !self->is_fullscreen_) {
                 self->is_fullscreen_ = true;
+                self->pending_unfullscreen_reposition_ = false;
+                if (self->reposition_timer_id_ != 0) {
+                    g_source_remove(self->reposition_timer_id_);
+                    self->reposition_timer_id_ = 0;
+                }
                 self->update_window_chrome();
             }
             self->sync_coordinated_grab();
@@ -219,6 +367,10 @@ SessionWindow::~SessionWindow() {
         g_source_remove(repin_timer_id_);
         repin_timer_id_ = 0;
     }
+    if (reposition_timer_id_ != 0) {
+        g_source_remove(reposition_timer_id_);
+        reposition_timer_id_ = 0;
+    }
     suspend_coordinated_grab(true);
     destroy_secondary_panes();
     if (session_) {
@@ -239,7 +391,9 @@ void SessionWindow::compute_initial_windowed_size() {
     GdkDisplay* display = window_ ? gtk_widget_get_display(GTK_WIDGET(window_)) : nullptr;
     const auto [mon_w, mon_h] = primary_logical_bounds(display);
     const int max_w = std::max(640, (mon_w * 85) / 100);
-    const int max_h = std::max(480, (mon_h * 80) / 100);
+    const int max_h = std::min(
+        std::max(480, (mon_h * 80) / 100),
+        std::max(480, ((mon_h - 96) * 85) / 100));
 
     if (smoke_test_mode_) {
         windowed_w_ = std::clamp<int>(static_cast<int>(profile_.width), 320, 1920);
@@ -506,10 +660,13 @@ void SessionWindow::setup_ui() {
 
     // Windows mstsc.exe-style Connection Bar inside same GtkOverlay (zero X11 popup flicker!)
     ConnectionBarCallbacks bar_cb;
-    bar_cb.on_mode_changed = [this](ConnectionBarMode mode) {
+    bar_cb.on_mode_changed = [this](ConnectionBarMode mode, bool hide_hover) {
         profile_.connection_bar_mode = mode;
+        profile_.connection_bar_hide_hover = hide_hover;
         if (mode == ConnectionBarMode::Hidden) {
             show_toast("Connection bar hidden — press Ctrl+Alt+Home to show");
+        } else if (mode == ConnectionBarMode::Pinned && hide_hover) {
+            show_toast("Pinned — unpin to use Ctrl+Alt+Home hide mode");
         }
         if (callbacks_.on_profile_changed) {
             callbacks_.on_profile_changed(profile_);
@@ -547,7 +704,10 @@ void SessionWindow::setup_ui() {
     };
 
     bar_ = std::make_unique<ConnectionBar>(
-        profile_.display_title(), profile_.connection_bar_mode, std::move(bar_cb));
+        profile_.display_title(),
+        profile_.connection_bar_mode,
+        profile_.connection_bar_hide_hover,
+        std::move(bar_cb));
     bar_->set_smart_sizing(profile_.smart_sizing);
     bar_->attach_to_overlay(overlay_);
 
@@ -811,26 +971,61 @@ void SessionWindow::start_rdp_session() {
                     suspend_coordinated_grab(suspend);
                 }
             });
-        if (ok && info.save_password && !info.is_gateway && !profile_.id.empty()) {
-            profile_.username = info.username;
-            profile_.domain = info.domain;
-            profile_.save_password = true;
-            profile_.runtime_password = info.password;
-            Keyring::store_secret(profile_.id, "password",
-                                  "WinRDP: " + profile_.display_title(), info.password);
-            if (callbacks_.on_profile_changed) {
-                auto copy = profile_;
-                g_idle_add(
-                    +[](gpointer data) -> gboolean {
-                        auto* p = static_cast<std::pair<SessionWindow*, ConnectionProfile>*>(data);
-                        if (p->first->callbacks_.on_profile_changed) {
-                            p->first->callbacks_.on_profile_changed(p->second);
-                        }
-                        delete p;
-                        return G_SOURCE_REMOVE;
-                    },
-                    new std::pair<SessionWindow*, ConnectionProfile>(this, std::move(copy)));
+        if (ok && !info.is_gateway) {
+            const auto norm = normalize_rdp_credentials(info.username, info.domain);
+            info.username = norm.username;
+            info.domain = norm.domain;
+
+            if (!profile_.id.empty()) {
+                if (info.save_password) {
+                    Keyring::store_secret(profile_.id, "password",
+                                          "WinRDP: " + profile_.display_title(), info.password);
+                } else {
+                    Keyring::clear_secret(profile_.id, "password");
+                }
             }
+
+            struct AuthPersistMsg {
+                SessionWindow* win;
+                std::weak_ptr<Alive> alive;
+                std::string username;
+                std::string domain;
+                std::string password;
+                bool save_password;
+                bool remember_username;
+            };
+            auto* msg = new AuthPersistMsg{
+                this,
+                weak_alive,
+                norm.username,
+                norm.domain,
+                info.password,
+                info.save_password,
+                info.remember_username
+            };
+            g_idle_add(
+                +[](gpointer data) -> gboolean {
+                    std::unique_ptr<AuthPersistMsg> m(static_cast<AuthPersistMsg*>(data));
+                    if (auto a = m->alive.lock(); a && a->valid && !m->win->closing_) {
+                        SessionWindow* self = m->win;
+                        self->profile_.save_password = m->save_password;
+                        self->profile_.remember_username = m->remember_username;
+                        if (m->remember_username || m->save_password) {
+                            self->profile_.username = m->username;
+                            self->profile_.domain = m->domain;
+                        }
+                        if (m->save_password) {
+                            self->profile_.runtime_password = m->password;
+                        } else {
+                            self->profile_.runtime_password.clear();
+                        }
+                        if (self->callbacks_.on_profile_changed) {
+                            self->callbacks_.on_profile_changed(self->profile_);
+                        }
+                    }
+                    return G_SOURCE_REMOVE;
+                },
+                msg);
         }
         return ok;
     };
@@ -848,8 +1043,8 @@ void SessionWindow::start_rdp_session() {
     icb.on_toggle_bar = [this]() {
         if (!bar_) return;
         bar_->toggle_visibility_hotkey();
-        if (bar_->mode() == ConnectionBarMode::Hidden && bar_->is_revealed()) {
-            show_toast("Connection bar shown — Ctrl+Alt+Home to hide");
+        if (!bar_->is_pinned() && bar_->is_hide_hover() && bar_->is_revealed()) {
+            show_toast("Connection bar shown — auto-hides or press Ctrl+Alt+Home");
         }
     };
     icb.on_toggle_fullscreen = [this]() {
@@ -1058,6 +1253,11 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
     }
 
     if (enter_fullscreen && layout.viewports.size() > 1) {
+        pending_unfullscreen_reposition_ = false;
+        if (reposition_timer_id_ != 0) {
+            g_source_remove(reposition_timer_id_);
+            reposition_timer_id_ = 0;
+        }
         if (resize_timer_id_ != 0) {
             g_source_remove(resize_timer_id_);
             resize_timer_id_ = 0;
@@ -1110,8 +1310,8 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
             icb.on_toggle_bar = [this]() {
                 if (!bar_) return;
                 bar_->toggle_visibility_hotkey();
-                if (bar_->mode() == ConnectionBarMode::Hidden && bar_->is_revealed()) {
-                    show_toast("Connection bar shown — Ctrl+Alt+Home to hide");
+                if (!bar_->is_pinned() && bar_->is_hide_hover() && bar_->is_revealed()) {
+                    show_toast("Connection bar shown — auto-hides or press Ctrl+Alt+Home");
                 }
             };
             icb.on_toggle_fullscreen = [this]() {
@@ -1252,6 +1452,11 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
     sync_css_flag(hdr_multimon_btn_, "winrdp-hdr-active", false);
 
     if (enter_fullscreen) {
+        pending_unfullscreen_reposition_ = false;
+        if (reposition_timer_id_ != 0) {
+            g_source_remove(reposition_timer_id_);
+            reposition_timer_id_ = 0;
+        }
         is_fullscreen_ = true;
         update_window_chrome();
 
@@ -1278,12 +1483,127 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         is_fullscreen_ = false;
         update_window_chrome();
 
+        pending_unfullscreen_reposition_ = true;
         gtk_window_unfullscreen(GTK_WINDOW(window_));
         gtk_window_unmaximize(GTK_WINDOW(window_));
         gtk_window_set_default_size(GTK_WINDOW(window_), windowed_w_, windowed_h_);
         gtk_window_present(GTK_WINDOW(window_));
+        schedule_windowed_reposition(120);
     }
     sync_coordinated_grab();
+}
+
+void SessionWindow::schedule_windowed_reposition(guint delay_ms) {
+    if (reposition_timer_id_ != 0) {
+        g_source_remove(reposition_timer_id_);
+        reposition_timer_id_ = 0;
+    }
+    if (closing_ || !window_) return;
+    reposition_timer_id_ = g_timeout_add(
+        delay_ms,
+        +[](gpointer data) -> gboolean {
+            auto* self = static_cast<SessionWindow*>(data);
+            self->reposition_timer_id_ = 0;
+            self->reposition_windowed_in_workarea();
+            return G_SOURCE_REMOVE;
+        },
+        this);
+}
+
+void SessionWindow::reposition_windowed_in_workarea() {
+    if (closing_ || !window_ || is_fullscreen_ ||
+        gtk_window_is_fullscreen(GTK_WINDOW(window_)) == TRUE ||
+        gtk_window_is_maximized(GTK_WINDOW(window_)) == TRUE) {
+        return;
+    }
+
+#ifdef GDK_WINDOWING_X11
+    GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
+    if (surface && GDK_IS_X11_SURFACE(surface)) {
+        GdkDisplay* display = gdk_surface_get_display(surface);
+        Display* xdpy = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
+        const Window xwin = gdk_x11_surface_get_xid(surface);
+        int use_x = 0;
+        int use_y = 0;
+        int use_w = 1920;
+        int use_h = 1000;
+        int scale = 1;
+        if (xdpy && xwin != None &&
+            query_monitor_workarea_x11(display, surface, use_x, use_y, use_w, use_h, scale)) {
+            int ext_left = 0;
+            int ext_right = 0;
+            int ext_top = 0;
+            int ext_bottom = 0;
+            query_frame_extents_x11(xdpy, xwin, ext_left, ext_right, ext_top, ext_bottom);
+
+            XWindowAttributes attr{};
+            int vis_w = windowed_w_ * scale;
+            int vis_h = windowed_h_ * scale;
+            if (XGetWindowAttributes(xdpy, xwin, &attr)) {
+                if (attr.width > ext_left + ext_right) {
+                    vis_w = attr.width - ext_left - ext_right;
+                }
+                if (attr.height > ext_top + ext_bottom) {
+                    vis_h = attr.height - ext_top - ext_bottom;
+                }
+            }
+
+            const int target_vis_x = use_x + std::max(0, (use_w - vis_w) / 2);
+            const int target_vis_y = use_y + std::max(0, (use_h - vis_h) / 2);
+            const int outer_x = target_vis_x - ext_left;
+            const int outer_y = target_vis_y - ext_top;
+            XMoveWindow(xdpy, xwin, outer_x, outer_y);
+            XFlush(xdpy);
+        }
+    }
+#endif
+    pending_unfullscreen_reposition_ = false;
+}
+
+bool SessionWindow::query_client_and_workarea_x11(int& client_x,
+                                                  int& client_y,
+                                                  int& work_x,
+                                                  int& work_y,
+                                                  int& work_w,
+                                                  int& work_h) const {
+#ifdef GDK_WINDOWING_X11
+    if (!window_) return false;
+    GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
+    if (!surface || !GDK_IS_X11_SURFACE(surface)) return false;
+
+    GdkDisplay* display = gdk_surface_get_display(surface);
+    Display* xdpy = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
+    const Window xwin = gdk_x11_surface_get_xid(surface);
+    if (!xdpy || xwin == None) return false;
+
+    int scale = 1;
+    if (!query_monitor_workarea_x11(display, surface, work_x, work_y, work_w, work_h, scale)) {
+        return false;
+    }
+    int ext_left = 0;
+    int ext_right = 0;
+    int ext_top = 0;
+    int ext_bottom = 0;
+    query_frame_extents_x11(xdpy, xwin, ext_left, ext_right, ext_top, ext_bottom);
+
+    int rx = 0;
+    int ry = 0;
+    Window child = None;
+    if (!XTranslateCoordinates(xdpy, xwin, DefaultRootWindow(xdpy), 0, 0, &rx, &ry, &child)) {
+        return false;
+    }
+    client_x = rx + ext_left;
+    client_y = ry + ext_top;
+    return true;
+#else
+    (void)client_x;
+    (void)client_y;
+    (void)work_x;
+    (void)work_y;
+    (void)work_w;
+    (void)work_h;
+    return false;
+#endif
 }
 
 void SessionWindow::schedule_dynamic_resize(int pixel_w, int pixel_h) {

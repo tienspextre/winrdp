@@ -594,6 +594,15 @@ void ManagerWindow::on_quick_connect_activated() {
         gtk_widget_grab_focus(quick_entry_);
         return;
     }
+    const auto norm = normalize_rdp_credentials(p.username, p.domain);
+    p.username = norm.username;
+    p.domain = norm.domain;
+    if (p.username.empty() && store_ && !store_->last_username().empty()) {
+        p.username = store_->last_username();
+        p.domain = store_->last_domain();
+    }
+    p.save_password = false;
+    p.remember_username = true;
     if (quick_multimon_btn_ &&
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(quick_multimon_btn_)) == TRUE) {
         p.display_mode = DisplayMode::MultiMonitor;

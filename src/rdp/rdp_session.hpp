@@ -64,6 +64,7 @@ struct AuthPromptInfo {
     std::string domain;
     std::string password;
     bool save_password = true;
+    bool remember_username = true;
     bool is_gateway = false;
 };
 

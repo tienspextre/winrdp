@@ -24,7 +24,7 @@ WinRDP được thiết kế để khắc phục các điểm khó chịu thư�
   - Toàn bộ khung hình RDP + thanh Connection Bar + thông báo kết nối lại nằm trong **1 `GtkOverlay` duy nhất** — không mở cửa sổ popup X11 phụ khi fullscreen nên GNOME Mutter không bị chớp đen.
   - Upload GPU theo từng vùng thay đổi (*dirty-rect* `glTexSubImage2D`), tự dùng `GL_NEAREST` khi chạy đúng tỷ lệ 1:1 (chữ ClearType sắc nét) và `GL_LINEAR` khi bật Smart Sizing.
 - **Connection Bar chuẩn `mstsc.exe` + Header Bar ở chế độ cửa sổ:**
-  - Fullscreen dùng thanh **Connection Bar** nổi ở cạnh trên với 3 chế độ (**Tự ẩn**, **Ghim**, **Ẩn hoàn toàn**); khi thoát sang chế độ cửa sổ tự động chuyển sang thanh tiêu đề gốc có thể kéo di chuyển và điều khiển thu nhỏ/phóng to/đóng bình thường.
+  - Fullscreen dùng thanh **Connection Bar** nổi ở cạnh trên với 2 công tắc độc lập (**Pin/Ghim** và **Hide/Hotkey-Only** via `Ctrl+Alt+Home`); khi thoát sang chế độ cửa sổ tự động chuyển sang thanh tiêu đề gốc đặt gọn trong vùng làm việc (*workarea*, không bị lẹm lên thanh panel trên cùng).
 - **Bắt phím Windows & Gõ tiếng Việt chuẩn:**
   - Bắt trọn `Alt+Tab`, phím `Win`, `PrintScreen`, `Ctrl+Shift+Esc` khi đang focus vào Windows.
   - Không gắn `GtkIMContext` lên vùng hiển thị RDP → gõ UniKey/EVKey trong Windows bình thường mà không bị `ibus`/`fcitx5` của Ubuntu nuốt phím.
@@ -44,15 +44,15 @@ WinRDP được thiết kế để khắc phục các điểm khó chịu thư�
 Tải file `.deb` mới nhất tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (đã đóng gói sẵn **FreeRDP 3.33.1** hỗ trợ **H.264/AVC444 + VA-API** riêng trong `/usr/lib/winrdp/lib/`, không xung đột với `libfreerdp` hệ thống):
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.4/winrdp_1.1.4_amd64.deb
+wget https://github.com/tienspextre/winrdp/releases/download/v1.1.5/winrdp_1.1.5_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.1.4_amd64.deb
+sudo apt install ./winrdp_1.1.5_amd64.deb
 ```
 
 Kiểm tra toàn vẹn SHA-256 (tùy chọn):
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.4/SHA256SUMS.txt
+wget https://github.com/tienspextre/winrdp/releases/download/v1.1.5/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 ```
 
@@ -100,7 +100,8 @@ Khi bấm **New Connection (`+`)** hoặc **Edit Connection**, hộp thoại có
 ### 1. Tab **General**
 - **Display Name / Group / Favorite:** tên hiển thị, tên nhóm gom ở sidebar trái và ghim vào mục yêu thích.
 - **PC Name / Host / IP & RDP Port:** địa chỉ máy đích và cổng (mặc định `3389`).
-- **Username / Domain / Password:** thông tin đăng nhập Windows.
+- **Username / Domain / Password:** thông tin đăng nhập Windows. Hỗ trợ cả nhập tách riêng **Username** + **Domain** hoặc gõ trực tiếp dạng `DOMAIN\user` / `.\localuser` / UPN `user@domain.vn` ở ô Username (tự chuẩn hóa sạch trước khi xác thực và dùng NTLM trực tiếp cho Domain NetBIOS / IP khi máy Ubuntu chưa cấu hình Kerberos).
+- **Remember Last Username:** tự lưu lại Username + Domain vừa dùng gần nhất khi bấm **Connect** (hỗ trợ cả khi **tắt** lưu mật khẩu để lần sau không phải gõ lại tên đăng nhập).
 - **Save Password in GNOME Keyring:** lưu mật khẩu mã hóa qua `libsecret` (không bao giờ lưu chữ thô trong file JSON).
 
 ### 2. Tab **Display**
@@ -112,10 +113,10 @@ Khi bấm **New Connection (`+`)** hoặc **Edit Connection**, hộp thoại có
 - **Dynamic Resolution (`MS-RDPEDISP`):** tự động đổi độ phân giải desktop Windows cho vừa khít khi bạn kéo cỡ cửa sổ hoặc chuyển Fullscreen/Windowed.
 - **Smart Sizing:** co giãn hình ảnh Windows để vừa khung cửa sổ (khuyên **tắt** khi muốn chữ 1:1 sắc nét nhất, hoặc bật khi xem màn hình remote độ phân giải lớn trong cửa sổ nhỏ).
 - **Remote Windows DPI Scaling:** `Auto`, `100%`, `125%`, `150%`, `200%`.
-- **Connection Bar:** chọn hành vi thanh nổi phía trên màn hình khi fullscreen:
-  - `Auto-hide`: ẩn gọn, trượt xuống khi rê chuột vào mép trên giữa màn hình (giống `mstsc.exe`).
-  - `Pinned`: luôn hiển thị.
-  - `Completely Hidden`: ẩn hoàn toàn để không vướng tab trình duyệt sát mép trên (bật/tắt tạm bằng `Ctrl+Alt+Home`).
+- **Pin Connection Bar & Hide Connection Bar (Hotkey-Only):** hai công tắc độc lập điều khiển thanh Connection Bar khi fullscreen:
+  - `Hide = Tắt, Pin = Tắt` (**Auto-hide**): mặc định ẩn, rê chuột vào mép trên giữa màn hình sẽ trượt xuống và tự ẩn khi rời chuột.
+  - `Hide = Bật, Pin = Tắt` (**Hotkey-Only**): tắt kích hoạt bằng chuột ở mép trên; **chỉ dùng `Ctrl+Alt+Home`** để hiện thanh (sau khi hiện sẽ tự ẩn lại nếu không tương tác / rời chuột hoặc bấm `Ctrl+Alt+Home` lần nữa).
+  - `Pin = Bật` *(bất kể `Hide` bật hay tắt)*: thanh Connection Bar **luôn hiển thị**. Nếu bật cả `Hide` và `Pin`, thanh vẫn luôn hiện cho tới khi bạn bỏ ghim (`Unpin`), lúc đó sẽ ẩn ngay và quay về chế độ `Ctrl+Alt+Home`.
 - **Monitors:**
   - Khi chọn `Multi-Monitor`: giữ bật **Use All Connected Monitors** để dùng tất cả màn hình, hoặc tắt đi để tích chọn riêng từng màn hình cụ thể.
   - Khi chọn `Fullscreen (Single Monitor)`: mục **Target Fullscreen Monitor** cho phép cố định màn hình Ubuntu nào sẽ hiển thị phiên remote.
@@ -146,18 +147,19 @@ Khi bấm **New Connection (`+`)** hoặc **Edit Connection**, hộp thoại có
 ## Hướng dẫn thao tác trong phiên Remote Desktop
 
 ### 1. Chế độ Fullscreen & Thanh Connection Bar
-Khi vào Fullscreen, rê chuột lên sát **mép trên giữa màn hình** để kéo **Connection Bar** xuống (nếu đang để `Auto-hide`):
-- **Ghim (Pin):** giữ thanh Connection Bar luôn hiện hoặc trả về `Auto-hide`.
+Khi vào Fullscreen, hành vi thanh **Connection Bar** phụ thuộc 2 nút **Pin (Ghim)** và **Hide (Mũi tên lên)**:
+- **Auto-hide (`Pin` tắt, `Hide` tắt):** rê chuột lên sát **mép trên giữa màn hình** để trượt thanh xuống; rời chuột thanh tự ẩn.
+- **Hotkey-Only Hide (`Pin` tắt, `Hide` bật):** mặc định ẩn và không hiện khi rê chuột; nhấn `Ctrl+Alt+Home` để mở/đóng nhanh (và tự ẩn lại sau khi dùng xong).
+- **Ghim (`Pin` bật, dù `Hide` bật hay tắt):** thanh **luôn hiển thị**. Nếu vừa bật `Hide` vừa bật `Pin`, sau khi bỏ ghim thanh sẽ tự ẩn ngay về chế độ `Ctrl+Alt+Home`.
 - **Biểu tượng sóng + huy hiệu Codec:** rê chuột để xem chi tiết độ phân giải, codec (`AVC444 VA`, `AVC420`, `RFX`), độ trễ RTT (ms) và FPS thực tế.
 - **Bàn phím (Capture):** bật/tắt bắt phím hệ thống (`Alt+Tab`, `Win`).
 - **Ổ khóa (`Send Ctrl+Alt+Del`):** gửi tổ hợp `Ctrl+Alt+Del` tới màn hình đăng nhập/khóa Windows.
 - **Kính lúp (`Smart Sizing`):** chuyển nhanh giữa tỷ lệ nét 1:1 và co giãn vừa khung hình.
-- **Mũi tên lên (`Hide`):** chuyển sang ẩn hoàn toàn (sau đó mở lại bằng `Ctrl+Alt+Home`).
 - **Thu nhỏ / Đa màn hình / Thoát Fullscreen / Đóng (`X`).**
 
 ### 2. Chế độ Windowed (Cửa sổ có thanh tiêu đề)
 Nhấn `Ctrl+Alt+Enter` hoặc nút Restore trên Connection Bar để thoát sang chế độ cửa sổ:
-- Thanh tiêu đề gốc (`AdwHeaderBar`) tự hiện ra để bạn **kéo di chuyển cửa sổ**, phóng to/thu nhỏ hoặc đóng.
+- Cửa sổ tự căn chỉnh nằm gọn trong vùng làm việc usable (*workarea*) bên dưới thanh top bar của Ubuntu để phần thanh tiêu đề gốc (`AdwHeaderBar`) luôn hiện đầy đủ và kéo di chuyển được.
 - Phía trên thanh tiêu đề hiển thị độ phân giải/codec/FPS hiện tại cùng bộ nút nhanh (Capture bàn phím, `Ctrl+Alt+Del`, Smart Sizing, Multi-Monitor, vào lại Fullscreen).
 
 ### 3. Sử dụng Nhiều màn hình (Multi-Monitor)

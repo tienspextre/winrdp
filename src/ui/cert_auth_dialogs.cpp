@@ -112,13 +112,14 @@ bool prompt_authentication_sync(GtkWindow* parent,
             AdwDialog* dlg = adw_alert_dialog_new(title.c_str(), "Enter your Windows credentials");
 
             GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-            gtk_widget_set_size_request(box, 340, -1);
+            gtk_widget_set_size_request(box, 380, -1);
 
             GtkWidget* list = gtk_list_box_new();
             gtk_widget_add_css_class(list, "boxed-list");
 
             GtkWidget* user_row = adw_entry_row_new();
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(user_row), "Username");
+            gtk_widget_set_tooltip_text(user_row, "Enter username or DOMAIN\\username");
             gtk_editable_set_text(GTK_EDITABLE(user_row), r->info.username.c_str());
 
             GtkWidget* dom_row = adw_entry_row_new();
@@ -129,13 +130,38 @@ bool prompt_authentication_sync(GtkWindow* parent,
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(pass_row), "Password");
             gtk_editable_set_text(GTK_EDITABLE(pass_row), r->info.password.c_str());
 
+            GtkWidget* remember_user_row = adw_switch_row_new();
+            adw_preferences_row_set_title(
+                ADW_PREFERENCES_ROW(remember_user_row), "Remember Last Username");
+            adw_action_row_set_subtitle(
+                ADW_ACTION_ROW(remember_user_row),
+                "Save username & domain on connect without saving password");
+            adw_switch_row_set_active(
+                ADW_SWITCH_ROW(remember_user_row), r->info.remember_username ? TRUE : FALSE);
+
             GtkWidget* save_row = adw_switch_row_new();
-            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(save_row), "Remember in Keyring");
-            adw_switch_row_set_active(ADW_SWITCH_ROW(save_row), r->info.save_password ? TRUE : FALSE);
+            adw_preferences_row_set_title(
+                ADW_PREFERENCES_ROW(save_row), "Save Password in Keyring");
+            adw_action_row_set_subtitle(
+                ADW_ACTION_ROW(save_row), "Store password encrypted in GNOME Keyring");
+            adw_switch_row_set_active(
+                ADW_SWITCH_ROW(save_row), r->info.save_password ? TRUE : FALSE);
+
+            g_signal_connect_object(
+                save_row,
+                "notify::active",
+                G_CALLBACK(+[](GObject* obj, GParamSpec*, gpointer user_data) {
+                    if (adw_switch_row_get_active(ADW_SWITCH_ROW(obj)) == TRUE) {
+                        adw_switch_row_set_active(ADW_SWITCH_ROW(user_data), TRUE);
+                    }
+                }),
+                remember_user_row,
+                G_CONNECT_DEFAULT);
 
             gtk_list_box_append(GTK_LIST_BOX(list), user_row);
             gtk_list_box_append(GTK_LIST_BOX(list), dom_row);
             gtk_list_box_append(GTK_LIST_BOX(list), pass_row);
+            gtk_list_box_append(GTK_LIST_BOX(list), remember_user_row);
             gtk_list_box_append(GTK_LIST_BOX(list), save_row);
             gtk_box_append(GTK_BOX(box), list);
 
@@ -155,12 +181,20 @@ bool prompt_authentication_sync(GtkWindow* parent,
                 GtkWidget* user_row;
                 GtkWidget* dom_row;
                 GtkWidget* pass_row;
+                GtkWidget* remember_user_row;
                 GtkWidget* save_row;
                 std::shared_ptr<std::promise<AuthOutcome>> promise;
                 std::function<void(bool)> suspend_grab;
             };
             auto* rctx = new RespCtx{
-                r->info, user_row, dom_row, pass_row, save_row, r->promise, r->suspend_grab
+                r->info,
+                user_row,
+                dom_row,
+                pass_row,
+                remember_user_row,
+                save_row,
+                r->promise,
+                r->suspend_grab
             };
 
             g_signal_connect(
@@ -175,6 +209,8 @@ bool prompt_authentication_sync(GtkWindow* parent,
                         out.updated.username = gtk_editable_get_text(GTK_EDITABLE(rc->user_row));
                         out.updated.domain = gtk_editable_get_text(GTK_EDITABLE(rc->dom_row));
                         out.updated.password = gtk_editable_get_text(GTK_EDITABLE(rc->pass_row));
+                        out.updated.remember_username =
+                            adw_switch_row_get_active(ADW_SWITCH_ROW(rc->remember_user_row)) == TRUE;
                         out.updated.save_password =
                             adw_switch_row_get_active(ADW_SWITCH_ROW(rc->save_row)) == TRUE;
                     }

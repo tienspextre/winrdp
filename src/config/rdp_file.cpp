@@ -320,13 +320,17 @@ bool parse_rdp_content(const std::string& raw_bytes, ConnectionProfile& out_prof
         }
     }
 
-    if (saw_displayconnectionbar && displayconnectionbar_val == 0) {
-        p.connection_bar_mode = ConnectionBarMode::Hidden;
-    } else if (saw_pinconnectionbar && pinconnectionbar_val != 0) {
-        p.connection_bar_mode = ConnectionBarMode::Pinned;
-    } else if (saw_displayconnectionbar) {
-        p.connection_bar_mode = ConnectionBarMode::AutoHide;
+    if (saw_displayconnectionbar || saw_pinconnectionbar) {
+        const bool hide_hover = (saw_displayconnectionbar && displayconnectionbar_val == 0);
+        const bool pinned = (saw_pinconnectionbar && pinconnectionbar_val != 0);
+        p.connection_bar_hide_hover = hide_hover;
+        p.connection_bar_mode = pinned ? ConnectionBarMode::Pinned
+                                       : (hide_hover ? ConnectionBarMode::Hidden : ConnectionBarMode::AutoHide);
     }
+
+    const auto norm = normalize_rdp_credentials(p.username, p.domain);
+    p.username = norm.username;
+    p.domain = norm.domain;
 
     if (p.hostname.empty()) {
         if (err) *err = "Missing 'full address:s:' in .rdp file";
@@ -385,16 +389,11 @@ std::string export_rdp_content(const ConnectionProfile& p) {
     out << "smart sizing:i:" << (p.smart_sizing ? 1 : 0) << "\r\n";
     out << "dynamic resolution:i:" << (p.dynamic_resolution ? 1 : 0) << "\r\n";
 
-    if (p.connection_bar_mode == ConnectionBarMode::Hidden) {
-        out << "displayconnectionbar:i:0\r\n";
-        out << "pinconnectionbar:i:0\r\n";
-    } else if (p.connection_bar_mode == ConnectionBarMode::Pinned) {
-        out << "displayconnectionbar:i:1\r\n";
-        out << "pinconnectionbar:i:1\r\n";
-    } else {
-        out << "displayconnectionbar:i:1\r\n";
-        out << "pinconnectionbar:i:0\r\n";
-    }
+    const bool hide_hover =
+        p.connection_bar_hide_hover || p.connection_bar_mode == ConnectionBarMode::Hidden;
+    const bool pinned = (p.connection_bar_mode == ConnectionBarMode::Pinned);
+    out << "displayconnectionbar:i:" << (hide_hover ? 0 : 1) << "\r\n";
+    out << "pinconnectionbar:i:" << (pinned ? 1 : 0) << "\r\n";
 
     int audiomode = 0;
     if (p.audio_mode == AudioMode::Remote) audiomode = 1;
