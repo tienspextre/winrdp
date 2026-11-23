@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(winrdp VERSION 1.1.6 LANGUAGES CXX)
+project(winrdp VERSION 1.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(FREERDP3_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/freerdp3-install")
+set(FREERDP3_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/freerdp3-install" CACHE PATH "Bundled FreeRDP 3.x install prefix")
 set(FREERDP3_LIB_DIR "${FREERDP3_INSTALL_DIR}/lib")
 set(FREERDP3_PKGCONFIG_DIR "${FREERDP3_LIB_DIR}/pkgconfig")
 
@@ -28,7 +28,7 @@ pkg_check_modules(ADW REQUIRED IMPORTED_TARGET libadwaita-1)
 pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
 pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
-pkg_check_modules(X11LIBS REQUIRED IMPORTED_TARGET x11 xrandr)
+pkg_check_modules(X11LIBS IMPORTED_TARGET x11 xrandr)
 
 add_library(winrdp_core STATIC
     src/config/profile.cpp
@@ -91,9 +91,13 @@ target_link_libraries(winrdp
         PkgConfig::GTK4
         PkgConfig::ADW
         PkgConfig::EPOXY
-        PkgConfig::X11LIBS
+        $<$<BOOL:${X11LIBS_FOUND}>:PkgConfig::X11LIBS>
         Threads::Threads
 )
+
+if(X11LIBS_FOUND)
+    target_compile_definitions(winrdp PRIVATE WINRDP_HAVE_X11=1)
+endif()
 
 set_target_properties(winrdp PROPERTIES
     BUILD_RPATH "${FREERDP3_LIB_DIR}"

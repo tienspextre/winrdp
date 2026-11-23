@@ -1,7 +1,9 @@
 #include "input/monitor_layout.hpp"
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 #include <gdk/x11/gdkx.h>
+G_GNUC_END_IGNORE_DEPRECATIONS
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
 #endif
@@ -47,7 +49,7 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
         return result;
     }
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
     struct XrrMon {
         std::string name;
         int x = 0;
@@ -59,9 +61,11 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
         bool primary = false;
     };
     std::vector<XrrMon> xrr_monitors;
-    if (GDK_IS_X11_DISPLAY(display)) {
-        Display* xdisplay = gdk_x11_display_get_xdisplay(display);
-        if (xdisplay) {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    const bool is_x11_dpy = GDK_IS_X11_DISPLAY(display);
+    Display* xdisplay = is_x11_dpy ? gdk_x11_display_get_xdisplay(display) : nullptr;
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    if (xdisplay) {
             int nrr = 0;
             XRRMonitorInfo* rrm = XRRGetMonitors(xdisplay, DefaultRootWindow(xdisplay), True, &nrr);
             if (rrm) {
@@ -84,7 +88,6 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
                 XRRFreeMonitors(rrm);
             }
         }
-    }
 #endif
 
     const guint n = g_list_model_get_n_items(list);
@@ -120,7 +123,7 @@ std::vector<MonitorInfo> query_local_monitors(GdkDisplay* display) {
         info.scale_factor = sf;
         info.is_primary = false;
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
         if (!xrr_monitors.empty()) {
             const XrrMon* matched = nullptr;
             if (!info.connector.empty()) {

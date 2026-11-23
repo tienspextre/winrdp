@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ubuntu 24.04 LTS build & runtime dependencies for WinRDP + FreeRDP 3.33.1 (H.264/AVC444/VA-API)
+# Ubuntu 24.04 LTS / 26.04 LTS / 26.10 build & runtime dependencies for WinRDP + FreeRDP 3.33.1 (H.264/AVC444/VA-API)
 sudo apt update
 sudo apt install -y \
   build-essential cmake ninja-build pkg-config git ccache \
@@ -14,4 +14,10 @@ sudo apt install -y \
   libcairo2-dev libopus-dev liburiparser-dev libpkcs11-helper1-dev \
   libpcsclite-dev libavcodec-dev libavformat-dev libavutil-dev \
   libswscale-dev libswresample-dev libva-dev \
-  intel-media-va-driver-non-free vainfo libdrm-dev
+  vainfo libdrm-dev desktop-file-utils dpkg-dev
+
+if apt-cache show intel-media-va-driver-non-free >/dev/null 2>&1; then
+  sudo apt install -y intel-media-va-driver-non-free
+else
+  sudo apt install -y intel-media-va-driver
+fi

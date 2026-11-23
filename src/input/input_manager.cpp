@@ -4,8 +4,10 @@
 #include <freerdp/input.h>
 #include <freerdp/scancode.h>
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 #include <gdk/x11/gdkx.h>
+G_GNUC_END_IGNORE_DEPRECATIONS
 #include <X11/XKBlib.h>
 #include <X11/Xlib.h>
 #endif
@@ -95,10 +97,12 @@ void InputManager::force_grab(bool want_grab) {
 }
 
 bool InputManager::is_x11_surface() const {
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
     if (!window_) return false;
     GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     return surface && GDK_IS_X11_SURFACE(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
 #else
     return false;
 #endif
@@ -142,11 +146,16 @@ void InputManager::apply_system_grab(bool want_grab) {
         return;
     }
 
-#ifdef GDK_WINDOWING_X11
-    if (GDK_IS_X11_SURFACE(surface)) {
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    const bool is_x11_surf = GDK_IS_X11_SURFACE(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    if (is_x11_surf) {
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
         GdkDisplay* display = gdk_surface_get_display(surface);
         Display* xdisplay = gdk_x11_display_get_xdisplay(display);
         Window xwin = gdk_x11_surface_get_xid(surface);
+        G_GNUC_END_IGNORE_DEPRECATIONS
         if (xdisplay && xwin != None) {
             if (want_grab) {
                 const int rc = XGrabKeyboard(xdisplay, xwin, True,
@@ -210,19 +219,22 @@ void InputManager::release_all_keys() {
 
 uint32_t InputManager::query_lock_sync_flags() const {
     uint32_t flags = 0;
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
     if (window_) {
         GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
-        if (surface && GDK_IS_X11_SURFACE(surface)) {
-            Display* xdisplay = gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));
-            if (xdisplay) {
-                unsigned int state = 0;
-                if (XkbGetIndicatorState(xdisplay, XkbUseCoreKbd, &state) == Success) {
-                    if (state & 0x01U) flags |= KBD_SYNC_CAPS_LOCK;
-                    if (state & 0x02U) flags |= KBD_SYNC_NUM_LOCK;
-                    if (state & 0x04U) flags |= KBD_SYNC_SCROLL_LOCK;
-                    return flags;
-                }
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+        const bool is_x11_surf = surface && GDK_IS_X11_SURFACE(surface);
+        Display* xdisplay = is_x11_surf
+                                ? gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface))
+                                : nullptr;
+        G_GNUC_END_IGNORE_DEPRECATIONS
+        if (xdisplay) {
+            unsigned int state = 0;
+            if (XkbGetIndicatorState(xdisplay, XkbUseCoreKbd, &state) == Success) {
+                if (state & 0x01U) flags |= KBD_SYNC_CAPS_LOCK;
+                if (state & 0x02U) flags |= KBD_SYNC_NUM_LOCK;
+                if (state & 0x04U) flags |= KBD_SYNC_SCROLL_LOCK;
+                return flags;
             }
         }
     }

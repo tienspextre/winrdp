@@ -64,6 +64,7 @@ GlCanvas::GlCanvas() {
 
     g_signal_connect(area_, "realize", G_CALLBACK(&GlCanvas::on_realize), this);
     g_signal_connect(area_, "unrealize", G_CALLBACK(&GlCanvas::on_unrealize), this);
+    g_signal_connect(area_, "map", G_CALLBACK(&GlCanvas::on_map), this);
     g_signal_connect(area_, "render", G_CALLBACK(&GlCanvas::on_render), this);
     g_signal_connect(area_, "resize", G_CALLBACK(&GlCanvas::on_resize), this);
 }
@@ -227,10 +228,16 @@ void GlCanvas::on_unrealize(GtkGLArea* area, gpointer user_data) {
     self->gl_ok_ = false;
 }
 
+void GlCanvas::on_map(GtkWidget* /*widget*/, gpointer user_data) {
+    auto* self = static_cast<GlCanvas*>(user_data);
+    self->request_redraw();
+}
+
 void GlCanvas::on_resize(GtkGLArea* /*area*/, gint width, gint height, gpointer user_data) {
     auto* self = static_cast<GlCanvas*>(user_data);
     self->widget_w_ = width;
     self->widget_h_ = height;
+    self->request_redraw();
 }
 
 void GlCanvas::upload_framebuffer_locked(uint32_t fb_w,

@@ -2,12 +2,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FREERDP_TAG="3.33.1"
-SRC_DIR="$ROOT/third_party/freerdp3-src"
-BUILD_DIR="$ROOT/third_party/freerdp3-build"
-INSTALL_DIR="$ROOT/third_party/freerdp3-install"
+FREERDP_TAG="${FREERDP_TAG:-3.33.1}"
+SRC_DIR="${FREERDP_SRC_DIR:-$ROOT/third_party/freerdp3-src}"
+BUILD_DIR="${FREERDP_BUILD_DIR:-$ROOT/third_party/freerdp3-build}"
+INSTALL_DIR="${FREERDP_INSTALL_DIR:-$ROOT/third_party/freerdp3-install}"
 
-if [[ ! -d "$SRC_DIR/.git" ]]; then
+WITH_X11_OPT="ON"
+if ! pkg-config --exists x11 2>/dev/null; then
+  WITH_X11_OPT="OFF"
+fi
+
+if [[ ! -f "$SRC_DIR/CMakeLists.txt" ]]; then
   echo "==> Cloning FreeRDP $FREERDP_TAG..."
   rm -rf "$SRC_DIR"
   git clone --depth 1 --branch "$FREERDP_TAG" https://github.com/FreeRDP/FreeRDP.git "$SRC_DIR"
@@ -39,7 +44,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
   -DWITH_CUPS=ON \
   -DWITH_FUSE=ON \
   -DWITH_JPEG=ON \
-  -DWITH_X11=ON \
+  -DWITH_X11="$WITH_X11_OPT" \
   -DWITH_WAYLAND=OFF
 
 echo "==> Building FreeRDP $FREERDP_TAG with $(nproc) jobs..."

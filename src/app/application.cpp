@@ -6,8 +6,10 @@
 #include "rdp/framebuffer.hpp"
 #include "rdp/rdp_session.hpp"
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 #include <gdk/x11/gdkx.h>
+G_GNUC_END_IGNORE_DEPRECATIONS
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #endif
@@ -30,7 +32,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.1.6"
+#define WINRDP_VERSION "1.2.0"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -276,7 +278,8 @@ void Application::launch_session(ConnectionProfile profile) {
             },
         },
         false,
-        next_session_id_++);
+        next_session_id_++,
+        manager_ ? manager_->gtk_window() : nullptr);
 
     holder->present();
     sessions_.push_back(std::move(holder));
@@ -329,7 +332,12 @@ int Application::run_smoke_test() {
     test_prof.connection_bar_mode = ConnectionBarMode::AutoHide;
 
     auto sess_win = std::make_unique<SessionWindow>(
-        GTK_APPLICATION(app_), test_prof, SessionWindowCallbacks{}, true);
+        GTK_APPLICATION(app_),
+        test_prof,
+        SessionWindowCallbacks{},
+        true,
+        0,
+        manager_ ? manager_->gtk_window() : nullptr);
 
     Framebuffer test_fb;
     test_fb.resize(640, 480);
@@ -391,14 +399,16 @@ int Application::run_smoke_test() {
     right_canvas->request_redraw();
 
     auto has_skip_taskbar = [](GtkWindow* win) -> bool {
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
         GdkSurface* surface = win ? gtk_native_get_surface(GTK_NATIVE(win)) : nullptr;
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
         if (!surface || !GDK_IS_X11_SURFACE(surface)) {
             return true; // Non-X11 (e.g., Wayland): EWMH check not applicable
         }
         GdkDisplay* display = gdk_surface_get_display(surface);
         Display* xdisplay = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
         const Window xwin = gdk_x11_surface_get_xid(surface);
+        G_GNUC_END_IGNORE_DEPRECATIONS
         if (!xdisplay || xwin == None) return false;
         const Atom wm_state = XInternAtom(xdisplay, "_NET_WM_STATE", False);
         const Atom skip_tb = XInternAtom(xdisplay, "_NET_WM_STATE_SKIP_TASKBAR", False);
@@ -468,41 +478,50 @@ int Application::run_smoke_test() {
                                 map_ok;
     const bool skip_taskbar_ok = has_skip_taskbar(GTK_WINDOW(sec_win));
 
-    // Verify fullscreen -> unfullscreen places client titlebar inside monitor workarea & centered on screen
+    // Verify fullscreen -> unfullscreen works cleanly on both X11 and Wayland
+    // (exits fullscreen, keeps HeaderBar + GL intact, and centers in X11 workarea)
+    sess_win->apply_fullscreen_state(true);
+    const auto fs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < fs_deadline) {
+        while (g_main_context_pending(ctx)) {
+            g_main_context_iteration(ctx, FALSE);
+        }
+        if (gtk_window_is_fullscreen(sess_win->gtk_window()) == TRUE) break;
+        g_usleep(10000);
+    }
+    pump_for(80);
+
+    sess_win->apply_fullscreen_state(false);
+    const auto ufs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    while (std::chrono::steady_clock::now() < ufs_deadline) {
+        while (g_main_context_pending(ctx)) {
+            g_main_context_iteration(ctx, FALSE);
+        }
+        if (gtk_window_is_fullscreen(sess_win->gtk_window()) == FALSE &&
+            sess_win->is_header_bar_visible()) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    // Let multi-pass X11 reposition timer & compositor configure settle
+    pump_for(500);
+    sess_win->canvas().request_redraw();
+    pump_for(80);
+
+    const bool unfullscreen_ok =
+        (gtk_window_is_fullscreen(sess_win->gtk_window()) == FALSE) &&
+        sess_win->is_header_bar_visible() &&
+        sess_win->canvas().gl_initialized() &&
+        (sess_win->canvas().last_gl_error() == 0);
+
     bool unfullscreen_pos_ok = true;
     int cx = 0, cy = 0, cw = 0, ch = 0, wx = 0, wy = 0, ww = 0, wh = 0;
-    if (sess_win->query_client_and_workarea_x11(cx, cy, cw, ch, wx, wy, ww, wh)) {
-        sess_win->apply_fullscreen_state(true);
-        const auto fs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
-        while (std::chrono::steady_clock::now() < fs_deadline) {
-            while (g_main_context_pending(ctx)) {
-                g_main_context_iteration(ctx, FALSE);
-            }
-            if (gtk_window_is_fullscreen(sess_win->gtk_window()) == TRUE) break;
-            g_usleep(10000);
-        }
-        pump_for(60);
-
-        sess_win->apply_fullscreen_state(false);
-        const auto ufs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
-        while (std::chrono::steady_clock::now() < ufs_deadline) {
-            while (g_main_context_pending(ctx)) {
-                g_main_context_iteration(ctx, FALSE);
-            }
-            if (gtk_window_is_fullscreen(sess_win->gtk_window()) == FALSE &&
-                sess_win->is_header_bar_visible()) {
-                break;
-            }
-            g_usleep(10000);
-        }
-        // Let multi-pass reposition timer fire & WM configure settle
-        pump_for(500);
-        if (sess_win->query_client_and_workarea_x11(cx, cy, cw, ch, wx, wy, ww, wh)) {
-            unfullscreen_pos_ok =
-                (cx >= wx && cy >= wy && cw > 0 && ch > 0 &&
-                 std::abs((cx + cw / 2) - (wx + ww / 2)) <= 16 &&
-                 std::abs((cy + ch / 2) - (wy + wh / 2)) <= 16);
-        }
+    const bool have_x11_pos = sess_win->query_client_and_workarea_x11(cx, cy, cw, ch, wx, wy, ww, wh);
+    if (have_x11_pos) {
+        unfullscreen_pos_ok =
+            (cx >= wx && cy >= wy && cw > 0 && ch > 0 &&
+             std::abs((cx + cw / 2) - (wx + ww / 2)) <= 16 &&
+             std::abs((cy + ch / 2) - (wy + wh / 2)) <= 16);
     }
 
     const bool mgr_ok = gtk_widget_get_realized(GTK_WIDGET(manager_->gtk_window())) == TRUE;
@@ -533,9 +552,19 @@ int Application::run_smoke_test() {
               << ", HiddenHotkey=" << (hidden_init_ok && hidden_hotkey_show_ok && hidden_hotkey_hide_ok)
               << ", PinnedHide=" << (pinned_hide_ok && pinned_hide_hotkey_ok && unpin_to_hidden_ok)
               << "): " << (bar_matrix_ok ? "OK" : "FAIL") << "\n";
-    std::cout << "Post-unfullscreen placement (client=" << cx << "," << cy << " " << cw << "x" << ch
-              << " workarea=" << wx << "," << wy << " " << ww << "x" << wh
-              << "): " << (unfullscreen_pos_ok ? "OK" : "FAIL") << "\n";
+    std::cout << "Post-unfullscreen state (fullscreen="
+              << (gtk_window_is_fullscreen(sess_win->gtk_window()) == TRUE ? 1 : 0)
+              << ", header=" << sess_win->is_header_bar_visible()
+              << ", gl=" << sess_win->canvas().gl_initialized()
+              << ", err=" << sess_win->canvas().last_gl_error()
+              << "): " << (unfullscreen_ok ? "OK" : "FAIL") << "\n";
+    if (have_x11_pos) {
+        std::cout << "Post-unfullscreen placement (client=" << cx << "," << cy << " " << cw << "x" << ch
+                  << " workarea=" << wx << "," << wy << " " << ww << "x" << wh
+                  << "): " << (unfullscreen_pos_ok ? "OK" : "FAIL") << "\n";
+    } else {
+        std::cout << "Post-unfullscreen placement (non-X11 compositor-managed): OK\n";
+    }
     std::cout << "Windowed HeaderBar (visible=" << sess_win->is_header_bar_visible()
               << ", height=" << sess_win->header_bar_height() << "px): "
               << (header_ok ? "OK" : "FAIL") << "\n";
@@ -552,7 +581,7 @@ int Application::run_smoke_test() {
     app_ = nullptr;
 
     if (!gl_ok || !multimon_gl_ok || !skip_taskbar_ok || !bar_matrix_ok ||
-        !unfullscreen_pos_ok || !header_ok || !identity_ok || !mgr_ok ||
+        !unfullscreen_ok || !unfullscreen_pos_ok || !header_ok || !identity_ok || !mgr_ok ||
         !RdpSession::has_h264_hwaccel_support()) {
         std::cerr << "SMOKE_TEST_FAIL\n";
         return 1;

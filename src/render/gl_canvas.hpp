@@ -53,6 +53,7 @@ public:
 private:
     static void on_realize(GtkGLArea* area, gpointer user_data);
     static void on_unrealize(GtkGLArea* area, gpointer user_data);
+    static void on_map(GtkWidget* widget, gpointer user_data);
     static gboolean on_render(GtkGLArea* area, GdkGLContext* context, gpointer user_data);
     static void on_resize(GtkGLArea* area, gint width, gint height, gpointer user_data);
 

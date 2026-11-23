@@ -1,4 +1,4 @@
-name: Release Ubuntu 24.04 .deb
+name: Release Ubuntu .deb
 
 on:
   push:
@@ -10,18 +10,34 @@ permissions:
   contents: write
 
 jobs:
-  build-ubuntu-24-04:
-    runs-on: ubuntu-24.04
+  build-deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro_tag: ubuntu24.04
+            runs_on: ubuntu-24.04
+            container: ""
+          - distro_tag: ubuntu26.04
+            runs_on: ubuntu-24.04
+            container: ubuntu:26.04
+
+    runs-on: ${{ matrix.runs_on }}
+    container: ${{ matrix.container }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Ubuntu 24.04 build dependencies
+      - name: Install build dependencies (${{ matrix.distro_tag }})
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config git ccache \
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
+            ca-certificates build-essential cmake ninja-build pkg-config git ccache \
             libgtk-4-dev libadwaita-1-dev libsecret-1-dev libepoxy-dev libgl-dev \
             libssl-dev libx11-dev libxext-dev libxinerama-dev libxcursor-dev \
             libxfixes-dev libxi-dev libxrandr-dev libxkbfile-dev libxdamage-dev \
@@ -31,14 +47,14 @@ jobs:
             libcairo2-dev libopus-dev liburiparser-dev libpkcs11-helper1-dev \
             libpcsclite-dev libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libswresample-dev libva-dev libdrm-dev \
-            desktop-file-utils dpkg-dev
+            desktop-file-utils dpkg-dev binutils file
 
-      - name: Restore cached FreeRDP 3.33.1
+      - name: Restore cached FreeRDP 3.33.1 (${{ matrix.distro_tag }})
         id: cache-freerdp3
         uses: actions/cache@v4
         with:
           path: third_party/freerdp3-install
-          key: freerdp3-3.33.1-ubuntu-24.04-${{ hashFiles('scripts/build-freerdp3.sh') }}
+          key: freerdp3-3.33.1-${{ matrix.distro_tag }}-${{ hashFiles('scripts/build-freerdp3.sh') }}
 
       - name: Build bundled FreeRDP 3.33.1 (H.264 + VA-API)
         run: |
@@ -49,14 +65,14 @@ jobs:
       - name: Build WinRDP and run unit tests
         run: ./scripts/build-app.sh
 
-      - name: Build .deb package
+      - name: Build .deb package (${{ matrix.distro_tag }})
         run: |
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             PKG_VERSION="${GITHUB_REF_NAME#v}"
           else
             PKG_VERSION="$(sed -nE 's/^[[:space:]]*project\(winrdp[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/p' CMakeLists.txt | head -n 1)"
           fi
-          ./scripts/build-deb.sh --version "$PKG_VERSION"
+          ./scripts/build-deb.sh --version "$PKG_VERSION" --distro-tag "${{ matrix.distro_tag }}"
 
       - name: Verify .deb metadata, linkage, and extracted binary
         run: |
@@ -91,16 +107,70 @@ jobs:
             exit 1
           fi
 
-      - name: Upload workflow artifacts
+      - name: Upload workflow artifacts (${{ matrix.distro_tag }})
         uses: actions/upload-artifact@v4
         with:
-          name: winrdp-ubuntu-24.04-deb
+          name: winrdp-${{ matrix.distro_tag }}-deb
           path: |
             dist/*.deb
-            dist/SHA256SUMS.txt
+
+  verify-ubuntu-26-10:
+    needs: build-deb
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.10
+    steps:
+      - name: Download ubuntu26.04 .deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winrdp-ubuntu26.04-deb
+          path: dist
+
+      - name: Install and verify winrdp .deb on Ubuntu 26.10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          DEB_FILE="$(ls -1 dist/*ubuntu26.04*.deb | head -n 1)"
+          apt-get update
+          apt-get install -y --no-install-recommends "./$DEB_FILE" desktop-file-utils
+          if ldd /usr/bin/winrdp | grep -q 'not found'; then
+            ldd /usr/bin/winrdp
+            exit 1
+          fi
+          for libname in libfreerdp3.so.3 libfreerdp-client3.so.3 libwinpr3.so.3; do
+            resolved="$(ldd /usr/bin/winrdp | awk -v l="$libname" '$1 == l {print $3}')"
+            resolved_real="$(realpath -m "$resolved")"
+            if [[ "$resolved_real" != "/usr/lib/winrdp/lib/"* ]]; then
+              echo "ERROR: $libname did not resolve to bundled dir: $resolved ($resolved_real)" >&2
+              exit 1
+            fi
+          done
+          desktop-file-validate /usr/share/applications/io.winrdp.Client.desktop
+          VER_OUT="$(winrdp --version)"
+          echo "$VER_OUT"
+          [[ "$VER_OUT" == *"H264/HWAccel=ON"* ]]
+
+  publish-release:
+    needs: [build-deb, verify-ubuntu-26-10]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download ubuntu24.04 .deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winrdp-ubuntu24.04-deb
+          path: dist
+
+      - name: Download ubuntu26.04 .deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winrdp-ubuntu26.04-deb
+          path: dist
+
+      - name: Compute combined SHA256SUMS.txt
+        run: |
+          (cd dist && sha256sum winrdp_*.deb | tee SHA256SUMS.txt)
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -108,6 +178,6 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS.txt --clobber
           else
             gh release create "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS.txt \
-              --title "WinRDP $GITHUB_REF_NAME (Ubuntu 24.04 amd64)" \
+              --title "WinRDP $GITHUB_REF_NAME" \
               --generate-notes
           fi

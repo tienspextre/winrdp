@@ -35,28 +35,38 @@ WinRDP được thiết kế để khắc phục các điểm khó chịu thư�
 
 ## Yêu cầu hệ thống & Cài đặt nhanh
 
-- **Hệ điều hành:** Ubuntu 24.04 LTS (`amd64`) — hỗ trợ cả phiên **X11** và **Wayland**.
+- **Hệ điều hành:** **Ubuntu 24.04 LTS**, **Ubuntu 26.04 LTS** và **Ubuntu 26.10** (`amd64`) — hỗ trợ cả phiên **Wayland** và **X11**.
 - **Tăng tốc phần cứng (tùy chọn cho GPU Intel):** `intel-media-va-driver-non-free` hoặc `intel-media-va-driver` (tự nhận biến `LIBVA_DRIVER_NAME=iHD` khi phát hiện GPU Intel).
 - **Lưu mật khẩu:** `gnome-keyring` (cài sẵn trên Ubuntu Desktop).
 
 ### Cài đặt từ gói `.deb` phát hành sẵn
 
-Tải file `.deb` mới nhất tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (đã đóng gói sẵn **FreeRDP 3.33.1** hỗ trợ **H.264/AVC444 + VA-API** riêng trong `/usr/lib/winrdp/lib/`, không xung đột với `libfreerdp` hệ thống):
+Tải đúng gói `.deb` cho phiên bản Ubuntu của bạn tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (tất cả gói đều đóng gói sẵn **FreeRDP 3.33.1** hỗ trợ **H.264/AVC444 + VA-API** riêng trong `/usr/lib/winrdp/lib/`, không xung đột với `libfreerdp` hệ thống):
+
+- **Ubuntu 26.04 LTS / Ubuntu 26.10 (mới nhất):**
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.6/winrdp_1.1.6_amd64.deb
+wget https://github.com/tienspextre/winrdp/releases/download/v1.2.0/winrdp_1.2.0_ubuntu26.04_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.1.6_amd64.deb
+sudo apt install ./winrdp_1.2.0_ubuntu26.04_amd64.deb
+```
+
+- **Ubuntu 24.04 LTS:**
+
+```bash
+wget https://github.com/tienspextre/winrdp/releases/download/v1.2.0/winrdp_1.2.0_ubuntu24.04_amd64.deb
+sudo apt update
+sudo apt install ./winrdp_1.2.0_ubuntu24.04_amd64.deb
 ```
 
 Kiểm tra toàn vẹn SHA-256 (tùy chọn):
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.6/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
+wget https://github.com/tienspextre/winrdp/releases/download/v1.2.0/SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt
 ```
 
-- **Nâng cấp phiên bản mới:** tải file `.deb` mới hơn và chạy lại `sudo apt install ./winrdp_<phiên_bản>_amd64.deb` — toàn bộ profile và mật khẩu đã lưu được giữ nguyên.
+- **Nâng cấp phiên bản mới:** tải file `.deb` mới hơn và chạy lại `sudo apt install ./winrdp_<phiên_bản>_ubuntu<bản>_amd64.deb` — toàn bộ profile và mật khẩu đã lưu được giữ nguyên.
 - **Gỡ cài đặt:** `sudo apt remove winrdp`.
 
 ---
@@ -246,9 +256,10 @@ winrdp --windowed admin@192.168.1.20:3390
 ## Build từ mã nguồn & Đóng gói `.deb`
 
 ```bash
-./scripts/install-deps.sh      # Cài đặt thư viện build & phụ thuộc (chạy 1 lần)
-./scripts/build-freerdp3.sh    # Build FreeRDP 3.33.1 (H.264 + VA-API + Pulse + FUSE3)
-./scripts/build-app.sh         # Biên dịch WinRDP & chạy toàn bộ CTest unit tests
-./scripts/install-desktop.sh   # Tích hợp nhanh vào ~/.local/bin & menu ứng dụng Ubuntu
-./scripts/build-deb.sh         # Đóng gói file .deb vào dist/winrdp_<ver>_amd64.deb
+./scripts/install-deps.sh                     # Cài đặt thư viện build & phụ thuộc (chạy 1 lần)
+./scripts/build-freerdp3.sh                   # Build FreeRDP 3.33.1 (H.264 + VA-API + Pulse + FUSE3)
+./scripts/build-app.sh                        # Biên dịch WinRDP & chạy toàn bộ CTest unit tests
+./scripts/install-desktop.sh                  # Tích hợp nhanh vào ~/.local/bin & menu ứng dụng Ubuntu
+./scripts/build-deb.sh                        # Đóng gói .deb cho Ubuntu đang chạy (dist/winrdp_<ver>_ubuntu<XX.XX>_amd64.deb)
+./scripts/build-deb-docker.sh --ubuntu 26.04  # Build & kiểm tra cài đặt sạch .deb cho Ubuntu 26.04 LTS & 26.10 qua Docker
 ```

@@ -29,7 +29,8 @@ public:
                   ConnectionProfile profile,
                   SessionWindowCallbacks callbacks = {},
                   bool smoke_test_mode = false,
-                  uint64_t session_id = 0);
+                  uint64_t session_id = 0,
+                  GtkWindow* placement_parent = nullptr);
     ~SessionWindow();
 
     SessionWindow(const SessionWindow&) = delete;
@@ -121,6 +122,10 @@ private:
     void detach_monitor_hotplug();
     void handle_monitors_changed();
 
+    void clear_temp_transient();
+    void cancel_initial_bootstrap();
+    void finish_initial_wayland_bootstrap(bool enter_fullscreen);
+
     GtkApplication* app_ = nullptr;
     ConnectionProfile profile_;
     SessionWindowCallbacks callbacks_;
@@ -201,6 +206,16 @@ private:
     guint reposition_timer_id_ = 0;
     bool pending_unfullscreen_reposition_ = false;
     int reposition_attempts_ = 0;
+
+    // Wayland 1-frame windowed bootstrap (records clean Mutter saved_rect before fullscreen)
+    GtkWindow* placement_parent_ = nullptr;
+    bool temp_transient_attached_ = false;
+    bool pending_initial_fullscreen_ = false;
+    bool initial_windowed_frame_committed_ = false;
+    bool initial_want_fullscreen_ = false;
+    guint initial_fs_tick_id_ = 0;
+    guint initial_fs_idle_id_ = 0;
+    guint initial_fs_fallback_timer_id_ = 0;
 };
 
 } // namespace winrdp

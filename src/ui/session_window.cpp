@@ -4,8 +4,10 @@
 #include "input/monitor_layout.hpp"
 #include "ui/cert_auth_dialogs.hpp"
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 #include <gdk/x11/gdkx.h>
+G_GNUC_END_IGNORE_DEPRECATIONS
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
@@ -60,7 +62,18 @@ std::pair<int, int> primary_logical_bounds(GdkDisplay* display) {
     return {mon_w, mon_h};
 }
 
-#ifdef GDK_WINDOWING_X11
+bool is_x11_display(GdkDisplay* display) {
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    return display && GDK_IS_X11_DISPLAY(display);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+#else
+    (void)display;
+    return false;
+#endif
+}
+
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
 bool query_monitor_workarea_x11(GdkDisplay* display,
                                 GdkSurface* surface,
                                 int& out_x,
@@ -68,8 +81,10 @@ bool query_monitor_workarea_x11(GdkDisplay* display,
                                 int& out_w,
                                 int& out_h,
                                 int& out_scale) {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     if (!display || !GDK_IS_X11_DISPLAY(display)) return false;
     Display* xdpy = gdk_x11_display_get_xdisplay(display);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     if (!xdpy) return false;
 
     GdkMonitor* mon = nullptr;
@@ -298,12 +313,17 @@ SessionWindow::SessionWindow(GtkApplication* app,
                              ConnectionProfile profile,
                              SessionWindowCallbacks callbacks,
                              bool smoke_test_mode,
-                             uint64_t session_id)
+                             uint64_t session_id,
+                             GtkWindow* placement_parent)
     : app_(app),
       profile_(std::move(profile)),
       callbacks_(std::move(callbacks)),
       smoke_test_mode_(smoke_test_mode),
-      session_id_(session_id) {
+      session_id_(session_id),
+      placement_parent_(placement_parent) {
+    if (placement_parent_) {
+        g_object_add_weak_pointer(G_OBJECT(placement_parent_), reinterpret_cast<gpointer*>(&placement_parent_));
+    }
     window_ = ADW_APPLICATION_WINDOW(adw_application_window_new(app));
     gtk_window_set_title(GTK_WINDOW(window_), ("WinRDP — " + profile_.display_title()).c_str());
     gtk_window_set_icon_name(GTK_WINDOW(window_), "io.winrdp.Client");
@@ -320,6 +340,7 @@ SessionWindow::SessionWindow(GtkApplication* app,
             auto* self = static_cast<SessionWindow*>(data);
             self->closing_ = true;
             self->closed_ = true;
+            self->cancel_initial_bootstrap();
             self->detach_primary_state_observer();
             self->detach_surface_monitor_guard(self->primary_bound_surface_, self->primary_enter_handler_);
             self->suspend_coordinated_grab(true);
@@ -341,6 +362,7 @@ SessionWindow::SessionWindow(GtkApplication* app,
         "destroy",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
             auto* self = static_cast<SessionWindow*>(data);
+            self->cancel_initial_bootstrap();
             self->primary_state_surface_ = nullptr;
             self->primary_state_handler_ = 0;
             self->primary_bound_surface_ = nullptr;
@@ -406,8 +428,10 @@ SessionWindow::SessionWindow(GtkApplication* app,
 
                 GdkSurface* surf = gtk_native_get_surface(GTK_NATIVE(self->window_));
                 bool is_x11 = false;
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+                G_GNUC_BEGIN_IGNORE_DEPRECATIONS
                 is_x11 = surf && GDK_IS_X11_SURFACE(surf);
+                G_GNUC_END_IGNORE_DEPRECATIONS
 #else
                 (void)surf;
 #endif
@@ -416,6 +440,8 @@ SessionWindow::SessionWindow(GtkApplication* app,
                     self->reposition_attempts_ = 0;
                     self->schedule_windowed_reposition(60);
                 }
+            } else if (!fs && gtk_window_is_maximized(GTK_WINDOW(self->window_)) == TRUE) {
+                gtk_window_unmaximize(GTK_WINDOW(self->window_));
             } else if (fs && !self->is_fullscreen_) {
                 self->is_fullscreen_ = true;
                 self->pending_unfullscreen_reposition_ = false;
@@ -425,20 +451,43 @@ SessionWindow::SessionWindow(GtkApplication* app,
                 }
                 self->update_window_chrome();
             }
+            if (self->canvas_) {
+                self->canvas_->request_redraw();
+            }
             self->sync_coordinated_grab();
         }),
         this);
 
-    g_signal_connect(
-        window_,
-        "notify::is-active",
-        G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
-            auto* self = static_cast<SessionWindow*>(data);
-            if (self->window_) {
-                self->on_pane_active_changed(GTK_WINDOW(self->window_));
-            }
-        }),
-        this);
+    auto on_active_notify = +[](GObject*, GParamSpec*, gpointer data) {
+        auto* self = static_cast<SessionWindow*>(data);
+        if (!self->window_) return;
+        if (gtk_window_is_active(GTK_WINDOW(self->window_)) == TRUE &&
+            self->initial_windowed_frame_committed_ &&
+            (self->pending_initial_fullscreen_ || self->temp_transient_attached_) &&
+            self->initial_fs_idle_id_ == 0) {
+            struct ActiveBootstrapCtx {
+                SessionWindow* self;
+                std::weak_ptr<Alive> alive;
+                bool enter_fs;
+            };
+            auto* ctx = new ActiveBootstrapCtx{
+                self, std::weak_ptr<Alive>(self->alive_), self->initial_want_fullscreen_};
+            self->initial_fs_idle_id_ = g_idle_add_full(
+                G_PRIORITY_DEFAULT_IDLE,
+                +[](gpointer idata) -> gboolean {
+                    auto* ic = static_cast<ActiveBootstrapCtx*>(idata);
+                    if (auto ia = ic->alive.lock(); ia && ia->valid) {
+                        ic->self->initial_fs_idle_id_ = 0;
+                        ic->self->finish_initial_wayland_bootstrap(ic->enter_fs);
+                    }
+                    return G_SOURCE_REMOVE;
+                },
+                ctx,
+                +[](gpointer idata) { delete static_cast<ActiveBootstrapCtx*>(idata); });
+        }
+        self->on_pane_active_changed(GTK_WINDOW(self->window_));
+    };
+    g_signal_connect(window_, "notify::is-active", G_CALLBACK(on_active_notify), this);
 
     if (!smoke_test_mode_) {
         start_rdp_session();
@@ -447,6 +496,11 @@ SessionWindow::SessionWindow(GtkApplication* app,
 
 SessionWindow::~SessionWindow() {
     alive_->valid = false;
+    cancel_initial_bootstrap();
+    if (placement_parent_) {
+        g_object_remove_weak_pointer(G_OBJECT(placement_parent_), reinterpret_cast<gpointer*>(&placement_parent_));
+        placement_parent_ = nullptr;
+    }
     detach_monitor_hotplug();
     detach_primary_state_observer();
     detach_surface_monitor_guard(primary_bound_surface_, primary_enter_handler_);
@@ -588,14 +642,16 @@ void SessionWindow::send_ctrl_alt_del() {
 }
 
 void SessionWindow::apply_skip_taskbar_hint(GtkWindow* win) {
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
     if (!win) return;
     GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(win));
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     if (!surface || !GDK_IS_X11_SURFACE(surface)) return;
 
     GdkDisplay* display = gdk_surface_get_display(surface);
     Display* xdisplay = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
     const Window xwin = gdk_x11_surface_get_xid(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     if (!xdisplay || xwin == None) return;
 
     const Atom wm_state = XInternAtom(xdisplay, "_NET_WM_STATE", False);
@@ -883,6 +939,47 @@ void SessionWindow::setup_ui() {
     gtk_widget_add_css_class(toast_label_, "winrdp-hud-toast");
     gtk_revealer_set_child(toast_revealer_, toast_label_);
     gtk_overlay_add_overlay(overlay_, GTK_WIDGET(toast_revealer_));
+
+    // Window-level local shortcuts in CAPTURE phase so Ctrl+Alt+Enter / Home / M work
+    // even when focus is on status banner, ConnectionBar, or HeaderBar (not only canvas_).
+    GtkEventController* win_key_ctrl = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(win_key_ctrl, GTK_PHASE_CAPTURE);
+    g_signal_connect(
+        win_key_ctrl,
+        "key-pressed",
+        G_CALLBACK(+[](GtkEventControllerKey*,
+                       guint keyval,
+                       guint,
+                       GdkModifierType state,
+                       gpointer data) -> gboolean {
+            auto* self = static_cast<SessionWindow*>(data);
+            const bool ctrl = (state & GDK_CONTROL_MASK) != 0;
+            const bool alt = (state & GDK_ALT_MASK) != 0;
+            if (!ctrl || !alt) {
+                return FALSE;
+            }
+            if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
+                self->toggle_fullscreen();
+                return TRUE;
+            }
+            if (keyval == GDK_KEY_Home || keyval == GDK_KEY_Pause || keyval == GDK_KEY_Break) {
+                if (self->bar_) {
+                    self->bar_->toggle_visibility_hotkey();
+                    if (!self->bar_->is_pinned() && self->bar_->is_hide_hover() &&
+                        self->bar_->is_revealed()) {
+                        self->show_toast("Connection bar shown — auto-hides or press Ctrl+Alt+Home");
+                    }
+                }
+                return TRUE;
+            }
+            if (keyval == GDK_KEY_m || keyval == GDK_KEY_M) {
+                self->toggle_multimon();
+                return TRUE;
+            }
+            return FALSE;
+        }),
+        this);
+    gtk_widget_add_controller(GTK_WIDGET(window_), win_key_ctrl);
 
     update_window_chrome();
 }
@@ -1187,15 +1284,132 @@ void SessionWindow::start_rdp_session() {
     session_->start();
 }
 
-void SessionWindow::present() {
-    if (!smoke_test_mode_ &&
-        (profile_.display_mode == DisplayMode::Fullscreen ||
-         profile_.display_mode == DisplayMode::MultiMonitor)) {
+void SessionWindow::clear_temp_transient() {
+    if (temp_transient_attached_ && window_) {
+        gtk_window_set_transient_for(GTK_WINDOW(window_), nullptr);
+    }
+    temp_transient_attached_ = false;
+}
+
+void SessionWindow::cancel_initial_bootstrap() {
+    if (initial_fs_tick_id_ != 0 && window_) {
+        gtk_widget_remove_tick_callback(GTK_WIDGET(window_), initial_fs_tick_id_);
+    }
+    initial_fs_tick_id_ = 0;
+    if (initial_fs_idle_id_ != 0) {
+        g_source_remove(initial_fs_idle_id_);
+        initial_fs_idle_id_ = 0;
+    }
+    if (initial_fs_fallback_timer_id_ != 0) {
+        g_source_remove(initial_fs_fallback_timer_id_);
+        initial_fs_fallback_timer_id_ = 0;
+    }
+    pending_initial_fullscreen_ = false;
+    initial_windowed_frame_committed_ = false;
+    initial_want_fullscreen_ = false;
+    clear_temp_transient();
+}
+
+void SessionWindow::finish_initial_wayland_bootstrap(bool enter_fullscreen) {
+    cancel_initial_bootstrap();
+    if (closing_ || !window_) return;
+    if (enter_fullscreen) {
         apply_fullscreen_state(true);
+    }
+    if (canvas_) {
+        canvas_->request_redraw();
+        gtk_widget_grab_focus(canvas_->widget());
+    }
+}
+
+void SessionWindow::present() {
+    if (!window_) return;
+    const bool want_fs =
+        !smoke_test_mode_ &&
+        (profile_.display_mode == DisplayMode::Fullscreen ||
+         profile_.display_mode == DisplayMode::MultiMonitor);
+    const bool is_x11 = is_x11_display(gtk_widget_get_display(GTK_WIDGET(window_)));
+
+    if (is_x11 || smoke_test_mode_) {
+        if (want_fs) {
+            apply_fullscreen_state(true);
+        } else {
+            is_fullscreen_ = false;
+            update_window_chrome();
+            gtk_window_present(GTK_WINDOW(window_));
+        }
     } else {
         is_fullscreen_ = false;
         update_window_chrome();
+        gtk_window_set_default_size(GTK_WINDOW(window_), windowed_w_, windowed_h_);
+
+        bool can_attach_parent = false;
+        if (placement_parent_ &&
+            gtk_widget_get_visible(GTK_WIDGET(placement_parent_)) == TRUE &&
+            gtk_widget_get_mapped(GTK_WIDGET(placement_parent_)) == TRUE) {
+            GdkSurface* psurf = gtk_native_get_surface(GTK_NATIVE(placement_parent_));
+            const bool minimized =
+                psurf && GDK_IS_TOPLEVEL(psurf) &&
+                ((gdk_toplevel_get_state(GDK_TOPLEVEL(psurf)) & GDK_TOPLEVEL_STATE_MINIMIZED) != 0);
+            can_attach_parent = !minimized;
+        }
+        if (can_attach_parent) {
+            gtk_window_set_transient_for(GTK_WINDOW(window_), placement_parent_);
+            temp_transient_attached_ = true;
+        }
+
         gtk_window_present(GTK_WINDOW(window_));
+
+        if (want_fs || temp_transient_attached_) {
+            initial_windowed_frame_committed_ = false;
+            initial_want_fullscreen_ = want_fs;
+            pending_initial_fullscreen_ = want_fs;
+            struct BootstrapCtx {
+                SessionWindow* self;
+                std::weak_ptr<Alive> alive;
+                bool enter_fs;
+            };
+            auto* tick_ctx = new BootstrapCtx{this, std::weak_ptr<Alive>(alive_), want_fs};
+            initial_fs_tick_id_ = gtk_widget_add_tick_callback(
+                GTK_WIDGET(window_),
+                +[](GtkWidget* w, GdkFrameClock*, gpointer data) -> gboolean {
+                    auto* c = static_cast<BootstrapCtx*>(data);
+                    auto a = c->alive.lock();
+                    if (!a || !a->valid || c->self->closing_) {
+                        if (a && a->valid) {
+                            c->self->initial_fs_tick_id_ = 0;
+                        }
+                        return G_SOURCE_REMOVE;
+                    }
+                    SessionWindow* self = c->self;
+                    if (gtk_widget_get_mapped(w) == TRUE &&
+                        gtk_widget_get_width(w) > 0 &&
+                        gtk_widget_get_height(w) > 0) {
+                        self->initial_fs_tick_id_ = 0;
+                        self->initial_windowed_frame_committed_ = true;
+                        if (self->initial_fs_fallback_timer_id_ == 0) {
+                            auto* timer_ctx = new BootstrapCtx{self, c->alive, c->enter_fs};
+                            self->initial_fs_fallback_timer_id_ = g_timeout_add_full(
+                                G_PRIORITY_DEFAULT,
+                                80,
+                                +[](gpointer tdata) -> gboolean {
+                                    auto* tc = static_cast<BootstrapCtx*>(tdata);
+                                    if (auto ta = tc->alive.lock(); ta && ta->valid) {
+                                        tc->self->initial_fs_fallback_timer_id_ = 0;
+                                        tc->self->finish_initial_wayland_bootstrap(tc->enter_fs);
+                                    }
+                                    return G_SOURCE_REMOVE;
+                                },
+                                timer_ctx,
+                                +[](gpointer tdata) { delete static_cast<BootstrapCtx*>(tdata); });
+                        }
+                        return G_SOURCE_REMOVE;
+                    }
+                    return G_SOURCE_CONTINUE;
+                },
+                tick_ctx,
+                +[](gpointer data) { delete static_cast<BootstrapCtx*>(data); });
+        }
     }
     if (canvas_) gtk_widget_grab_focus(canvas_->widget());
 }
@@ -1226,6 +1440,7 @@ void SessionWindow::toggle_fullscreen() {
 }
 
 void SessionWindow::toggle_multimon() {
+    cancel_initial_bootstrap();
     if (!window_ || !session_) return;
     GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(window_));
     auto all_monitors = query_local_monitors(display);
@@ -1276,6 +1491,7 @@ void SessionWindow::toggle_multimon() {
 }
 
 void SessionWindow::apply_fullscreen_state(bool enter) {
+    cancel_initial_bootstrap();
     if (!window_) return;
     GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(window_));
 
@@ -1586,8 +1802,10 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
 
         GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
         bool is_x11 = false;
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
         is_x11 = surface && GDK_IS_X11_SURFACE(surface);
+        G_GNUC_END_IGNORE_DEPRECATIONS
 #else
         (void)surface;
 #endif
@@ -1595,49 +1813,21 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         gtk_window_unfullscreen(GTK_WINDOW(window_));
         gtk_window_unmaximize(GTK_WINDOW(window_));
         gtk_window_set_default_size(GTK_WINDOW(window_), windowed_w_, windowed_h_);
+        gtk_window_present(GTK_WINDOW(window_));
+        if (canvas_) {
+            canvas_->request_redraw();
+        }
 
-        if (is_x11 || smoke_test_mode_) {
-            pending_unfullscreen_reposition_ = is_x11;
+        if (is_x11) {
+            pending_unfullscreen_reposition_ = true;
             reposition_attempts_ = 0;
-            gtk_window_present(GTK_WINDOW(window_));
-            if (is_x11) {
-                schedule_windowed_reposition(60);
-            }
+            schedule_windowed_reposition(60);
         } else {
-            // Wayland: recreate xdg_toplevel cleanly without poisoned fullscreen (0,0) saved_rect
             pending_unfullscreen_reposition_ = false;
             if (reposition_timer_id_ != 0) {
                 g_source_remove(reposition_timer_id_);
                 reposition_timer_id_ = 0;
             }
-            gtk_widget_set_visible(GTK_WIDGET(window_), FALSE);
-            struct WaylandRemapCtx {
-                SessionWindow* self;
-                std::weak_ptr<Alive> alive;
-            };
-            auto* ctx = new WaylandRemapCtx{this, std::weak_ptr<Alive>(alive_)};
-            reposition_timer_id_ = g_timeout_add_full(
-                G_PRIORITY_DEFAULT,
-                30,
-                +[](gpointer data) -> gboolean {
-                    auto* c = static_cast<WaylandRemapCtx*>(data);
-                    if (auto a = c->alive.lock(); a && a->valid && !c->self->closing_) {
-                        SessionWindow* self = c->self;
-                        self->reposition_timer_id_ = 0;
-                        if (!self->is_fullscreen_ && self->window_) {
-                            gtk_window_set_default_size(
-                                GTK_WINDOW(self->window_), self->windowed_w_, self->windowed_h_);
-                            gtk_window_present(GTK_WINDOW(self->window_));
-                            if (self->canvas_) {
-                                self->canvas_->request_redraw();
-                                gtk_widget_grab_focus(self->canvas_->widget());
-                            }
-                        }
-                    }
-                    return G_SOURCE_REMOVE;
-                },
-                ctx,
-                +[](gpointer data) { delete static_cast<WaylandRemapCtx*>(data); });
         }
     }
     sync_coordinated_grab();
@@ -1683,12 +1873,17 @@ void SessionWindow::reposition_windowed_in_workarea() {
         return;
     }
 
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
     GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
-    if (surface && GDK_IS_X11_SURFACE(surface)) {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    const bool is_x11_surf = surface && GDK_IS_X11_SURFACE(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    if (is_x11_surf) {
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
         GdkDisplay* display = gdk_surface_get_display(surface);
         Display* xdpy = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
         const Window xwin = gdk_x11_surface_get_xid(surface);
+        G_GNUC_END_IGNORE_DEPRECATIONS
         int use_x = 0;
         int use_y = 0;
         int use_w = 1920;
@@ -1762,14 +1957,16 @@ bool SessionWindow::query_client_and_workarea_x11(int& client_x,
                                                   int& work_y,
                                                   int& work_w,
                                                   int& work_h) const {
-#ifdef GDK_WINDOWING_X11
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
     if (!window_) return false;
     GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     if (!surface || !GDK_IS_X11_SURFACE(surface)) return false;
 
     GdkDisplay* display = gdk_surface_get_display(surface);
     Display* xdpy = display ? gdk_x11_display_get_xdisplay(display) : nullptr;
     const Window xwin = gdk_x11_surface_get_xid(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     if (!xdpy || xwin == None) return false;
 
     int scale = 1;
@@ -1811,6 +2008,9 @@ bool SessionWindow::query_client_and_workarea_x11(int& client_x,
 }
 
 void SessionWindow::schedule_dynamic_resize(int pixel_w, int pixel_h) {
+    if (pending_initial_fullscreen_) {
+        return;
+    }
     if (!session_ || !profile_.dynamic_resolution || pixel_w < 320 || pixel_h < 200) {
         return;
     }
@@ -1901,11 +2101,16 @@ void SessionWindow::raise_sibling_panes(GtkWindow* active_win) {
             minimized = (gdk_toplevel_get_state(GDK_TOPLEVEL(s)) & GDK_TOPLEVEL_STATE_MINIMIZED) != 0;
         }
         if (!minimized) {
-#ifdef GDK_WINDOWING_X11
-            if (s && GDK_IS_X11_SURFACE(s)) {
+#if defined(GDK_WINDOWING_X11) && defined(WINRDP_HAVE_X11)
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            const bool is_x11_other = s && GDK_IS_X11_SURFACE(s);
+            G_GNUC_END_IGNORE_DEPRECATIONS
+            if (is_x11_other) {
+                G_GNUC_BEGIN_IGNORE_DEPRECATIONS
                 GdkDisplay* dpy = gdk_surface_get_display(s);
                 Display* xdpy = dpy ? gdk_x11_display_get_xdisplay(dpy) : nullptr;
                 const Window xw = gdk_x11_surface_get_xid(s);
+                G_GNUC_END_IGNORE_DEPRECATIONS
                 if (xdpy && xw != None) {
                     XMapRaised(xdpy, xw);
                     XFlush(xdpy);

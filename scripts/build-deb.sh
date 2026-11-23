@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION=""
+DISTRO_TAG=""
+DISTRO_TAG_SET=0
 REBUILD=0
+FREERDP_LIB_DIR="$ROOT/third_party/freerdp3-install/lib"
+BUILD_DIR="$ROOT/build"
+DIST_DIR="$ROOT/dist"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -12,12 +17,38 @@ while [[ $# -gt 0 ]]; do
       VERSION="$2"
       shift 2
       ;;
+    --distro-tag)
+      [[ $# -ge 2 ]] || { echo "ERROR: --distro-tag requires an argument" >&2; exit 1; }
+      DISTRO_TAG="$2"
+      DISTRO_TAG_SET=1
+      shift 2
+      ;;
+    --no-distro-tag)
+      DISTRO_TAG=""
+      DISTRO_TAG_SET=1
+      shift
+      ;;
+    --freerdp-lib-dir)
+      [[ $# -ge 2 ]] || { echo "ERROR: --freerdp-lib-dir requires an argument" >&2; exit 1; }
+      FREERDP_LIB_DIR="$2"
+      shift 2
+      ;;
+    --build-dir)
+      [[ $# -ge 2 ]] || { echo "ERROR: --build-dir requires an argument" >&2; exit 1; }
+      BUILD_DIR="$2"
+      shift 2
+      ;;
+    --dist-dir)
+      [[ $# -ge 2 ]] || { echo "ERROR: --dist-dir requires an argument" >&2; exit 1; }
+      DIST_DIR="$2"
+      shift 2
+      ;;
     --rebuild)
       REBUILD=1
       shift
       ;;
     -h|--help)
-      echo "Usage: $0 [--version <VER>] [--rebuild]"
+      echo "Usage: $0 [--version <VER>] [--distro-tag <tag> | --no-distro-tag] [--freerdp-lib-dir <dir>] [--build-dir <dir>] [--dist-dir <dir>] [--rebuild]"
       exit 0
       ;;
     *)
@@ -35,32 +66,37 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
+if [[ "$DISTRO_TAG_SET" -eq 0 && -r /etc/os-release ]]; then
+  OS_ID="$(. /etc/os-release && printf '%s' "${ID:-}")"
+  OS_VER="$(. /etc/os-release && printf '%s' "${VERSION_ID:-}")"
+  if [[ "$OS_ID" == "ubuntu" && -n "$OS_VER" ]]; then
+    DISTRO_TAG="ubuntu${OS_VER}"
+  fi
+fi
+
 ARCH="$(dpkg --print-architecture)"
-FREERDP_LIB_DIR="$ROOT/third_party/freerdp3-install/lib"
 
 if [[ ! -e "$FREERDP_LIB_DIR/libfreerdp3.so.3" ]]; then
   echo "ERROR: Bundled FreeRDP 3.33.1 not found in $FREERDP_LIB_DIR. Run scripts/build-freerdp3.sh first." >&2
   exit 1
 fi
 
-if [[ "$REBUILD" -eq 1 || ! -x "$ROOT/build/winrdp" ]]; then
+if [[ "$REBUILD" -eq 1 || ! -x "$BUILD_DIR/winrdp" ]]; then
   "$ROOT/scripts/build-app.sh"
 fi
 
-DIST_DIR="$ROOT/dist"
-STAGE="$DIST_DIR/staging"
 SHLIB_WORK="$(mktemp -d)"
+STAGE="$SHLIB_WORK/staging"
 
 cleanup() {
   rm -rf "$SHLIB_WORK"
 }
 trap cleanup EXIT
 
-rm -rf "$STAGE"
 mkdir -p "$DIST_DIR" "$STAGE"
 
 echo "==> Installing WinRDP into staging directory..."
-DESTDIR="$STAGE" cmake --install "$ROOT/build" --prefix /usr
+DESTDIR="$STAGE" cmake --install "$BUILD_DIR" --prefix /usr
 
 BUNDLED_LIB_DIR="$STAGE/usr/lib/winrdp/lib"
 mkdir -p "$BUNDLED_LIB_DIR"
@@ -125,7 +161,7 @@ fi
 
 for so_file in "${BUNDLED_SO_FILES[@]}"; do
   SO_RPATH_OUT="$(readelf -d "$so_file" | grep -E 'RPATH|RUNPATH' || true)"
-  if [[ "$SO_RPATH_OUT" != *'[$ORIGIN/../lib]'* ]]; then
+  if [[ "$SO_RPATH_OUT" != *'[$ORIGIN'* ]] || echo "$SO_RPATH_OUT" | grep -qE '/home/|third_party|/opt/'; then
     echo "ERROR: Unexpected RPATH/RUNPATH in bundled library $so_file:" >&2
     echo "$SO_RPATH_OUT" >&2
     exit 1
@@ -178,7 +214,8 @@ Depends: ${SHLIBS_DEPENDS}
 Recommends: intel-media-va-driver-non-free | intel-media-va-driver, mesa-va-drivers, gnome-keyring
 Description: Windows-native Remote Desktop client for Ubuntu (FreeRDP 3 + OpenGL)
  WinRDP is a native GTK4/Libadwaita and OpenGL 3.3 Remote Desktop (RDP) client
- built on FreeRDP 3.33.1 with H.264/AVC444 and VA-API hardware decoding support.
+ built on FreeRDP 3.33.1 with H.264/AVC444 and VA-API hardware decoding support
+ for Ubuntu 24.04 LTS, 26.04 LTS, and 26.10 (X11 & Wayland).
  .
  Features a single-window zero-flicker compositor surface, Windows mstsc.exe
  style auto-hide/pinned/hidden connection bar, raw scancode keyboard grab,
@@ -222,15 +259,22 @@ EOF
 
 chmod 0755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/postrm"
 
-DEB_NAME="winrdp_${VERSION}_${ARCH}.deb"
+if [[ -n "$DISTRO_TAG" ]]; then
+  DEB_NAME="winrdp_${VERSION}_${DISTRO_TAG}_${ARCH}.deb"
+else
+  DEB_NAME="winrdp_${VERSION}_${ARCH}.deb"
+fi
 DEB_PATH="$DIST_DIR/$DEB_NAME"
 rm -f "$DEB_PATH"
 
 echo "==> Building package $DEB_PATH..."
 dpkg-deb --root-owner-group --build "$STAGE" "$DEB_PATH"
-rm -rf "$STAGE"
 
-(cd "$DIST_DIR" && sha256sum "$DEB_NAME" > SHA256SUMS.txt)
+(
+  cd "$DIST_DIR"
+  mapfile -t VER_DEBS < <(compgen -G "winrdp_${VERSION}_*.deb" | LC_ALL=C sort)
+  sha256sum "${VER_DEBS[@]}" > SHA256SUMS.txt
+)
 
 echo "==> Package built successfully:"
 echo "    DEB:    $DEB_PATH"
