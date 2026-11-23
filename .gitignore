@@ -12,6 +12,12 @@ compile_commands.json
 /third_party/freerdp3-build/
 /third_party/freerdp3-install/
 
+# Flatpak local build / repo / cache directories
+/.flatpak-builder/
+/third_party/flatpak-builder-state/
+/third_party/flatpak-build/
+/third_party/flatpak-repo/
+
 # Editor / OS temp files
 .cache/
 .vscode/

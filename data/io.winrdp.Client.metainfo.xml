@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.winrdp.Client</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>WinRDP</name>
+  <summary>Windows-native Remote Desktop client for Linux (FreeRDP 3 + OpenGL)</summary>
+  <description>
+    <p>
+      WinRDP is a native GTK4/Libadwaita and OpenGL 3.3 Remote Desktop (RDP) client
+      built on FreeRDP 3.33.1 with FFmpeg H.264/AVC444 and VA-API hardware decoding support.
+    </p>
+    <p>
+      Features include a single-window zero-flicker compositor surface, Windows mstsc.exe
+      connection bar, raw scancode keyboard grab, dynamic resolution, bidirectional
+      text/image clipboard, audio/mic redirection, drive sharing, and multi-monitor fullscreen.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.winrdp.Client.desktop</launchable>
+  <url type="homepage">https://github.com/tienspextre/winrdp</url>
+  <developer id="io.winrdp">
+    <name>Nguyen Dang Tien</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.3.0" date="2026-11-23"/>
+  </releases>
+</component>

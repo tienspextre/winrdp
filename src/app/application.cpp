@@ -32,7 +32,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.2.0"
+#define WINRDP_VERSION "1.3.0"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -111,6 +111,7 @@ std::string resolve_css_path() {
     } else if (const char* home = std::getenv("HOME")) {
         candidates.push_back(fs::path(home) / ".local" / "share" / "winrdp" / "style.css");
     }
+    candidates.push_back(fs::path("/app/share/winrdp/style.css"));
     candidates.push_back(fs::path("/usr/share/winrdp/style.css"));
     candidates.push_back(fs::path("/usr/local/share/winrdp/style.css"));
     for (const auto& c : candidates) {
@@ -593,9 +594,11 @@ int Application::run_smoke_test() {
 int Application::run(int argc, char** argv) {
     // Enable Intel iHD VA-API hardware decode by default when available on Intel GPUs
     std::error_code ec;
-    if (!std::getenv("LIBVA_DRIVER_NAME") &&
-        has_intel_gpu() &&
-        fs::exists("/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so", ec)) {
+    const bool has_intel_vaapi =
+        fs::exists("/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so", ec) ||
+        fs::exists("/usr/lib/x86_64-linux-gnu/dri/intel-vaapi-driver/iHD_drv_video.so", ec) ||
+        fs::exists("/usr/lib/x86_64-linux-gnu/GL/default/lib/dri/iHD_drv_video.so", ec);
+    if (!std::getenv("LIBVA_DRIVER_NAME") && has_intel_gpu() && has_intel_vaapi) {
         setenv("LIBVA_DRIVER_NAME", "iHD", 0);
     }
 

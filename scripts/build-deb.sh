@@ -272,8 +272,10 @@ dpkg-deb --root-owner-group --build "$STAGE" "$DEB_PATH"
 
 (
   cd "$DIST_DIR"
-  mapfile -t VER_DEBS < <(compgen -G "winrdp_${VERSION}_*.deb" | LC_ALL=C sort)
-  sha256sum "${VER_DEBS[@]}" > SHA256SUMS.txt
+  mapfile -t VER_FILES < <({ compgen -G "winrdp_${VERSION}_*.flatpak" || true; compgen -G "winrdp_${VERSION}_*.deb" || true; } | LC_ALL=C sort)
+  if [[ "${#VER_FILES[@]}" -gt 0 ]]; then
+    sha256sum "${VER_FILES[@]}" > SHA256SUMS.txt
+  fi
 )
 
 echo "==> Package built successfully:"

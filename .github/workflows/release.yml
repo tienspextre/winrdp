@@ -149,8 +149,49 @@ jobs:
           echo "$VER_OUT"
           [[ "$VER_OUT" == *"H264/HWAccel=ON"* ]]
 
+  build-flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Flatpak & flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+
+      - name: Restore cached Flatpak builder state
+        uses: actions/cache@v4
+        with:
+          path: third_party/flatpak-builder-state
+          key: flatpak-winrdp-3.33.1-${{ hashFiles('flatpak/io.winrdp.Client.yml') }}
+
+      - name: Build single-file Flatpak bundle
+        run: |
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            PKG_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PKG_VERSION="$(sed -nE 's/^[[:space:]]*project\(winrdp[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/p' CMakeLists.txt | head -n 1)"
+          fi
+          ./scripts/build-flatpak.sh --version "$PKG_VERSION"
+
+      - name: Verify Flatpak bundle
+        run: |
+          BUNDLE_FILE="$(ls -1 dist/*.flatpak | head -n 1)"
+          flatpak install --user -y --noninteractive "$BUNDLE_FILE"
+          VER_OUT="$(flatpak run io.winrdp.Client --version)"
+          echo "$VER_OUT"
+          [[ "$VER_OUT" == *"H264/HWAccel=ON"* ]]
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winrdp-flatpak
+          path: |
+            dist/*.flatpak
+
   publish-release:
-    needs: [build-deb, verify-ubuntu-26-10]
+    needs: [build-deb, verify-ubuntu-26-10, build-flatpak]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -166,18 +207,24 @@ jobs:
           name: winrdp-ubuntu26.04-deb
           path: dist
 
+      - name: Download Flatpak bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winrdp-flatpak
+          path: dist
+
       - name: Compute combined SHA256SUMS.txt
         run: |
-          (cd dist && sha256sum winrdp_*.deb | tee SHA256SUMS.txt)
+          (cd dist && sha256sum winrdp_*.flatpak winrdp_*.deb | tee SHA256SUMS.txt)
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS.txt --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/*.flatpak dist/*.deb dist/SHA256SUMS.txt --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS.txt \
+            gh release create "$GITHUB_REF_NAME" dist/*.flatpak dist/*.deb dist/SHA256SUMS.txt \
               --title "WinRDP $GITHUB_REF_NAME" \
               --generate-notes
           fi

@@ -35,39 +35,56 @@ WinRDP được thiết kế để khắc phục các điểm khó chịu thư�
 
 ## Yêu cầu hệ thống & Cài đặt nhanh
 
-- **Hệ điều hành:** **Ubuntu 24.04 LTS**, **Ubuntu 26.04 LTS** và **Ubuntu 26.10** (`amd64`) — hỗ trợ cả phiên **Wayland** và **X11**.
-- **Tăng tốc phần cứng (tùy chọn cho GPU Intel):** `intel-media-va-driver-non-free` hoặc `intel-media-va-driver` (tự nhận biến `LIBVA_DRIVER_NAME=iHD` khi phát hiện GPU Intel).
+- **Hệ điều hành:** Hỗ trợ **mọi phiên bản Ubuntu (`amd64`)** từ **Ubuntu 20.04 / 22.04 LTS / 24.04 LTS** đến **Ubuntu 26.04 LTS / 26.10** — hoạt động trên cả **Wayland** và **X11**.
+- **Tăng tốc phần cứng (GPU Intel):** Tự bật `LIBVA_DRIVER_NAME=iHD` khi phát hiện GPU Intel + driver Intel VA-API (`intel-media-va-driver` trên host hoặc `org.freedesktop.Platform.VAAPI.Intel` trong Flatpak).
 - **Lưu mật khẩu:** `gnome-keyring` (cài sẵn trên Ubuntu Desktop).
 
-### Cài đặt từ gói `.deb` phát hành sẵn
+### Cách 1: 1 file cài duy nhất cho mọi bản Ubuntu (Flatpak — Khuyên dùng)
 
-Tải đúng gói `.deb` cho phiên bản Ubuntu của bạn tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (tất cả gói đều đóng gói sẵn **FreeRDP 3.33.1** hỗ trợ **H.264/AVC444 + VA-API** riêng trong `/usr/lib/winrdp/lib/`, không xung đột với `libfreerdp` hệ thống):
+Dùng **1 file `.flatpak` duy nhất** chạy đồng nhất trên **Ubuntu 20.04, 22.04 LTS, 24.04 LTS, 26.04 LTS, 26.10** và các bản Linux khác (kèm sẵn GNOME Runtime + FFmpeg H.264/AVC444 + FreeRDP 3.33.1, không phụ thuộc phiên bản thư viện hệ thống):
+
+```bash
+# Cài Flatpak nếu máy chưa có
+sudo apt update && sudo apt install -y flatpak
+
+# Tải và cài đặt WinRDP (lần đầu Flatpak sẽ tự kéo runtime nền từ Flathub)
+wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/winrdp_1.3.0_x86_64.flatpak
+flatpak install --user -y ./winrdp_1.3.0_x86_64.flatpak
+```
+
+Mở ứng dụng từ menu Ubuntu hoặc chạy `flatpak run io.winrdp.Client`.
+
+- **Nâng cấp:** tải file `.flatpak` mới hơn và chạy lại `flatpak install --user -y --reinstall ./winrdp_<phiên_bản>_x86_64.flatpak`.
+- **Gỡ cài đặt:** `flatpak uninstall --user -y io.winrdp.Client`.
+
+### Cách 2: Gói `.deb` native (chỉ Ubuntu 24.04 LTS / 26.04 LTS / 26.10)
+
+Nếu chỉ cài trên các bản Ubuntu mới và muốn file tải nhỏ gọn (~2 MB), tải đúng bản `.deb` tại **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)**:
 
 - **Ubuntu 26.04 LTS / Ubuntu 26.10 (mới nhất):**
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.2.0/winrdp_1.2.0_ubuntu26.04_amd64.deb
+wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/winrdp_1.3.0_ubuntu26.04_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.2.0_ubuntu26.04_amd64.deb
+sudo apt install ./winrdp_1.3.0_ubuntu26.04_amd64.deb
 ```
 
 - **Ubuntu 24.04 LTS:**
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.2.0/winrdp_1.2.0_ubuntu24.04_amd64.deb
+wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/winrdp_1.3.0_ubuntu24.04_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.2.0_ubuntu24.04_amd64.deb
+sudo apt install ./winrdp_1.3.0_ubuntu24.04_amd64.deb
 ```
 
-Kiểm tra toàn vẹn SHA-256 (tùy chọn):
+Kiểm tra toàn vẹn SHA-256 (tùy chọn cho cả `.flatpak` lẫn `.deb`):
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.2.0/SHA256SUMS.txt
+wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
 ```
 
-- **Nâng cấp phiên bản mới:** tải file `.deb` mới hơn và chạy lại `sudo apt install ./winrdp_<phiên_bản>_ubuntu<bản>_amd64.deb` — toàn bộ profile và mật khẩu đã lưu được giữ nguyên.
-- **Gỡ cài đặt:** `sudo apt remove winrdp`.
+- **Nâng cấp / Gỡ gói `.deb`:** chạy lại `sudo apt install ./winrdp_<phiên_bản>_ubuntu<bản>_amd64.deb` hoặc `sudo apt remove winrdp`.
 
 ---
 
@@ -253,13 +270,14 @@ winrdp --windowed admin@192.168.1.20:3390
 
 ---
 
-## Build từ mã nguồn & Đóng gói `.deb`
+## Build từ mã nguồn & Đóng gói `.flatpak` / `.deb`
 
 ```bash
 ./scripts/install-deps.sh                     # Cài đặt thư viện build & phụ thuộc (chạy 1 lần)
 ./scripts/build-freerdp3.sh                   # Build FreeRDP 3.33.1 (H.264 + VA-API + Pulse + FUSE3)
 ./scripts/build-app.sh                        # Biên dịch WinRDP & chạy toàn bộ CTest unit tests
 ./scripts/install-desktop.sh                  # Tích hợp nhanh vào ~/.local/bin & menu ứng dụng Ubuntu
+./scripts/build-flatpak.sh                    # Đóng gói 1 file Flatpak duy nhất chạy mọi bản Ubuntu
 ./scripts/build-deb.sh                        # Đóng gói .deb cho Ubuntu đang chạy (dist/winrdp_<ver>_ubuntu<XX.XX>_amd64.deb)
 ./scripts/build-deb-docker.sh --ubuntu 26.04  # Build & kiểm tra cài đặt sạch .deb cho Ubuntu 26.04 LTS & 26.10 qua Docker
 ```

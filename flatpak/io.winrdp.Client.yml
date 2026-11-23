@@ -1,0 +1,109 @@
+id: io.winrdp.Client
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: winrdp
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.gnome.keyring.SystemPrompter
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /man
+  - /share/doc
+  - /share/man
+  - '*.la'
+  - '*.a'
+
+modules:
+  - name: cjson
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_CJSON_TEST=OFF
+    sources:
+      - type: archive
+        url: https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.19.tar.gz
+        sha256: 7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562
+
+  - name: uriparser
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      - -DURIPARSER_BUILD_DOCS=OFF
+      - -DURIPARSER_BUILD_TESTS=OFF
+      - -DURIPARSER_BUILD_TOOLS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/uriparser/uriparser/archive/refs/tags/uriparser-0.9.8.tar.gz
+        sha256: d6289387eaf2495e38ed80d709ad673fe04d63fad707badfee96f3d2dabc7c35
+
+  - name: freerdp3
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - '-DCMAKE_INSTALL_RPATH=$ORIGIN'
+      - -DWITH_CLIENT=ON
+      - -DWITH_CLIENT_COMMON=ON
+      - -DWITH_CLIENT_CHANNELS=ON
+      - -DWITH_CLIENT_SDL=OFF
+      - -DWITH_SERVER=OFF
+      - -DWITH_SAMPLE=OFF
+      - -DWITH_MANPAGES=OFF
+      - -DBUILD_TESTING=OFF
+      - -DWITH_FFMPEG=ON
+      - -DWITH_FFMPEG_HWACCEL=ON
+      - -DWITH_VIDEO_FFMPEG=ON
+      - -DWITH_DSP_FFMPEG=ON
+      - -DWITH_SWSCALE=ON
+      - -DWITH_CAIRO=ON
+      - -DWITH_PULSE=ON
+      - -DWITH_ALSA=ON
+      - -DWITH_CUPS=ON
+      - -DWITH_FUSE=OFF
+      - -DWITH_USB=OFF
+      - -DWITH_PCSC=OFF
+      - -DWITH_PKCS11=OFF
+      - -DWITH_JPEG=ON
+      - -DWITH_X11=ON
+      - -DWITH_WAYLAND=OFF
+    sources:
+      - type: archive
+        url: https://github.com/FreeRDP/FreeRDP/archive/refs/tags/3.33.1.tar.gz
+        sha256: 6b6da1e7217f924b033da6896e70eb4c4a447c3900d03c0d10179062f0a7d495
+
+  - name: winrdp
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DFREERDP3_INSTALL_DIR=/app
+      - '-DWINRDP_INSTALL_RPATH=$ORIGIN/../lib'
+      - -DWINRDP_INSTALL_DESKTOP_FILES=ON
+    run-tests: true
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .flatpak-builder
+          - build
+          - dist
+          - third_party

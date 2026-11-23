@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(winrdp VERSION 1.2.0 LANGUAGES CXX)
+project(winrdp VERSION 1.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(FREERDP3_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/freerdp3-install" CACHE PATH "Bundled FreeRDP 3.x install prefix")
+set(WINRDP_INSTALL_RPATH "$ORIGIN/../lib/winrdp/lib" CACHE STRING "Install RPATH for winrdp binary")
+option(WINRDP_INSTALL_DESKTOP_FILES "Install desktop entry and AppStream metainfo" OFF)
 set(FREERDP3_LIB_DIR "${FREERDP3_INSTALL_DIR}/lib")
 set(FREERDP3_PKGCONFIG_DIR "${FREERDP3_LIB_DIR}/pkgconfig")
 
@@ -101,7 +103,7 @@ endif()
 
 set_target_properties(winrdp PROPERTIES
     BUILD_RPATH "${FREERDP3_LIB_DIR}"
-    INSTALL_RPATH "$ORIGIN/../lib/winrdp/lib"
+    INSTALL_RPATH "${WINRDP_INSTALL_RPATH}"
     BUILD_WITH_INSTALL_RPATH FALSE
 )
 
@@ -111,6 +113,16 @@ install(TARGETS winrdp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/style.css DESTINATION ${CMAKE_INSTALL_DATADIR}/winrdp)
 install(FILES data/io.winrdp.Client.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 install(FILES data/winrdp-mime.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
+if(WINRDP_INSTALL_DESKTOP_FILES)
+    set(WINRDP_BIN "winrdp")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/io.winrdp.Client.desktop.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/io.winrdp.Client.desktop"
+        @ONLY
+    )
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/io.winrdp.Client.desktop" DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES data/io.winrdp.Client.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+endif()
 
 enable_testing()
 
