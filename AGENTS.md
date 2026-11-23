@@ -1,13 +1,13 @@
 # WinRDP Release & Versioning Rules
 
 ## Mandatory Commit & GitHub Release Workflow
-For every completed code, packaging, or user-facing change in this repository, you MUST finish the task by:
+For every completed code or packaging change (that alters shipped binaries, behavior, dependencies, or installers) in this repository, you MUST finish the task by:
 
 1. **Choose the next Semantic Version (`MAJOR.MINOR.PATCH`) based on the scope of the plan/change:**
    - **Major (`X.0.0`, e.g., `1.x.x` → `2.0.0`):** Breaking architecture/config/CLI changes or major milestones.
    - **Minor (`X.Y.0`, e.g., `1.0.0` → `1.1.0`):** Large plans, new user-facing features, or substantial capability additions (reset `PATCH` to `0`).
    - **Patch (`X.Y.Z`, e.g., `1.1.0` → `1.1.1` → `1.1.2`):** Small plans, bug fixes, UI/UX tweaks, packaging/CI fixes, or minor improvements.
-   - Update the version consistently in `CMakeLists.txt` (`project(winrdp VERSION X.Y.Z ...)`), `src/app/application.cpp` fallback `WINRDP_VERSION`, and download commands in `README.md`.
+   - Update the version consistently in `CMakeLists.txt` (`project(winrdp VERSION X.Y.Z ...)`), `src/app/application.cpp` fallback `WINRDP_VERSION`, `data/io.winrdp.Client.metainfo.xml`, and download links in `README.md` and `README.vi.md`.
 
 2. **Build, Verify, and Package (`.flatpak` + `.deb`):**
    - Run `./scripts/build-app.sh` and confirm all CTest unit tests pass with zero warnings/errors.
@@ -25,5 +25,6 @@ For every completed code, packaging, or user-facing change in this repository, y
    - Verify publication with `gh release view vX.Y.Z`.
 
 ## Exceptions
+- **Documentation-only changes** (`README.md`, `README.vi.md`, code comments, rules/docs) only require a Git commit and push on `main` — do NOT bump SemVer, rebuild installers, or publish a new GitHub Release.
 - Pure read-only questions, reviews, or unapproved draft proposals do not require a commit or release.
 - If the user explicitly asks to skip releasing (e.g., WIP commit only), follow the user's explicit instruction.

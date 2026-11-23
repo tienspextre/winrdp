@@ -1,67 +1,106 @@
-# WinRDP — Hướng dẫn sử dụng & Trải nghiệm RDP chuẩn Windows `mstsc.exe` trên Ubuntu
+<div align="center">
 
-Ứng dụng Remote Desktop (RDP) native cho Ubuntu (GTK4 + Libadwaita + OpenGL 3.3), xây dựng trực tiếp trên lõi **FreeRDP 3.33.1** với **FFmpeg H.264/AVC444 + Intel VA-API**.
+<img src="data/io.winrdp.Client.svg" width="84" height="84" alt="WinRDP logo" />
 
-WinRDP được thiết kế để khắc phục các điểm khó chịu thường gặp của RDP client trên Linux (chớp màn hình khi fullscreen, kẹt bộ gõ tiếng Việt, rớt grab phím hoặc vỡ đa màn hình), mang lại trải nghiệm mượt mà tương tự `mstsc.exe` trên Windows và Thincast.
+<h1>WinRDP</h1>
 
-## Mục lục
+<p>
+  <strong>Native Windows <code>mstsc.exe</code>-class Remote Desktop (RDP) client for Ubuntu &amp; Linux</strong><br />
+  GTK4 + Libadwaita + OpenGL 3.3 &bull; Bundled FreeRDP 3.33.1 with FFmpeg H.264/AVC444 &amp; Intel VA-API
+</p>
 
-1. [Điểm nổi bật](#điểm-nổi-bật)
-2. [Yêu cầu hệ thống & Cài đặt nhanh](#yêu-cầu-hệ-thống--cài-đặt-nhanh)
-3. [Hướng dẫn sử dụng giao diện Connection Manager](#hướng-dẫn-sử-dụng-giao-diện-connection-manager)
-4. [Giải thích chi tiết 5 tab cấu hình Profile](#giải-thích-chi-tiết-5-tab-cấu-hình-profile)
-5. [Hướng dẫn thao tác trong phiên Remote Desktop](#hướng-dẫn-thao-tác-trong-phiên-remote-desktop)
-6. [Phím tắt mặc định](#phím-tắt-mặc-định)
-7. [Sử dụng qua dòng lệnh CLI](#sử-dụng-qua-dòng-lệnh-cli)
-8. [Vị trí lưu dữ liệu & Xử lý sự cố thường gặp](#vị-trí-lưu-dữ-liệu--xử-lý-sự-cố-thường-gặp)
-9. [Build từ mã nguồn & Đóng gói .deb](#build-từ-mã-nguồn--đóng-gói-deb)
+<p>
+  <a href="https://github.com/tienspextre/winrdp/releases">
+    <img src="https://img.shields.io/github/v/release/tienspextre/winrdp?style=flat-square&color=1c71d8" alt="Latest Release" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License Apache-2.0" />
+  </a>
+  <img src="https://img.shields.io/badge/Ubuntu-20.04%20--%2026.10-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 20.04 to 26.10" />
+  <img src="https://img.shields.io/badge/Display-Wayland%20%26%20X11-2ec27e?style=flat-square" alt="Wayland and X11" />
+  <img src="https://img.shields.io/badge/FreeRDP-3.33.1%20%2B%20H.264%20VA--API-613583?style=flat-square" alt="FreeRDP 3.33.1 + H.264 VA-API" />
+</p>
 
----
+<p>
+  <strong>English</strong> &nbsp;|&nbsp; <a href="README.vi.md">Tiếng Việt</a>
+</p>
 
-## Điểm nổi bật
-
-- **Không nháy màn hình (Zero-Flicker Single-Window OpenGL 3.3):**
-  - Toàn bộ khung hình RDP + thanh Connection Bar + thông báo kết nối lại nằm trong **1 `GtkOverlay` duy nhất** — không mở cửa sổ popup X11 phụ khi fullscreen nên GNOME Mutter không bị chớp đen.
-  - Upload GPU theo từng vùng thay đổi (*dirty-rect* `glTexSubImage2D`), tự dùng `GL_NEAREST` khi chạy đúng tỷ lệ 1:1 (chữ ClearType sắc nét) và `GL_LINEAR` khi bật Smart Sizing.
-- **Connection Bar chuẩn `mstsc.exe` + Header Bar ở chế độ cửa sổ:**
-  - Fullscreen dùng thanh **Connection Bar** nổi ở cạnh trên với 2 công tắc độc lập (**Pin/Ghim** và **Hide/Hotkey-Only** via `Ctrl+Alt+Home`); khi thoát sang chế độ cửa sổ tự động chuyển sang thanh tiêu đề gốc đặt gọn trong vùng làm việc (*workarea*, không bị lẹm lên thanh panel trên cùng).
-- **Bắt phím Windows & Gõ tiếng Việt chuẩn:**
-  - Bắt trọn `Alt+Tab`, phím `Win`, `PrintScreen`, `Ctrl+Shift+Esc` khi đang focus vào Windows.
-  - Không gắn `GtkIMContext` lên vùng hiển thị RDP → gõ UniKey/EVKey trong Windows bình thường mà không bị `ibus`/`fcitx5` của Ubuntu nuốt phím.
-- **Đa màn hình thực sự (X11 & Wayland):**
-  - Tự tạo cửa sổ fullscreen gốc trên từng màn hình (`gtk_window_fullscreen_on_monitor`), hỗ trợ kéo cửa sổ ứng dụng Windows xuyên suốt qua lại giữa các màn, bật/tắt nhanh trong phiên (`Ctrl+Alt+M`), gộp chung 1 cửa sổ trên Ubuntu Dock và tự nâng đồng bộ toàn bộ màn hình khi quay lại phiên remote.
+</div>
 
 ---
 
-## Yêu cầu hệ thống & Cài đặt nhanh
+WinRDP is built to eliminate the most common pain points of Linux RDP clients — fullscreen black flicker, stuck Vietnamese IME input, lost keyboard grabs, uncentered windowed title bars, and broken multi-monitor sessions — delivering the responsiveness and polish of Windows `mstsc.exe` natively on **Wayland** and **X11**.
 
-- **Hệ điều hành:** Hỗ trợ **mọi phiên bản Ubuntu (`amd64`)** từ **Ubuntu 20.04 / 22.04 LTS / 24.04 LTS** đến **Ubuntu 26.04 LTS / 26.10** — hoạt động trên cả **Wayland** và **X11**.
-- **Tăng tốc phần cứng (GPU Intel):** Tự bật `LIBVA_DRIVER_NAME=iHD` khi phát hiện GPU Intel + driver Intel VA-API (`intel-media-va-driver` trên host hoặc `org.freedesktop.Platform.VAAPI.Intel` trong Flatpak).
-- **Lưu mật khẩu:** `gnome-keyring` (cài sẵn trên Ubuntu Desktop).
+## Table of Contents
 
-### Cách 1: 1 file cài duy nhất cho mọi bản Ubuntu (Flatpak — Khuyên dùng)
+1. [Features](#1-features)
+2. [Compatibility & Quick Installation](#2-compatibility--quick-installation)
+3. [Connection Manager Guide](#3-connection-manager-guide)
+4. [Profile Settings Reference (5 Tabs)](#4-profile-settings-reference-5-tabs)
+5. [In-Session Guide](#5-in-session-guide)
+6. [Keyboard Shortcuts](#6-keyboard-shortcuts)
+7. [Command-Line Interface (CLI)](#7-command-line-interface-cli)
+8. [Configuration Storage & Troubleshooting](#8-configuration-storage--troubleshooting)
+9. [Building from Source & Packaging](#9-building-from-source--packaging)
+10. [License](#10-license)
 
-Dùng **1 file `.flatpak` duy nhất** chạy đồng nhất trên **Ubuntu 20.04, 22.04 LTS, 24.04 LTS, 26.04 LTS, 26.10** và các bản Linux khác (kèm sẵn GNOME Runtime + FFmpeg H.264/AVC444 + FreeRDP 3.33.1, không phụ thuộc phiên bản thư viện hệ thống):
+---
+
+## 1. Features
+
+| Category | Capabilities |
+| --- | --- |
+| **Graphics & Rendering** | Single-window zero-flicker `GtkOverlay` + OpenGL 3.3 dirty-rect (`glTexSubImage2D`), crisp 1:1 `GL_NEAREST` vs Smart Sizing `GL_LINEAR`, bundled FreeRDP `3.33.1` with FFmpeg `H.264/AVC444`, `AVC420`, `RemoteFX` & automatic Intel VA-API (`LIBVA_DRIVER_NAME=iHD`), Dynamic Resolution (`MS-RDPEDISP`). |
+| **`mstsc.exe` UX (Wayland & X11)** | Floating top Connection Bar in fullscreen with independent **Pin** & **Hide (Hotkey-Only)** controls and live codec/RTT/FPS telemetry; windowed mode switches seamlessly to a native `AdwHeaderBar` auto-centered in usable workarea below the Ubuntu top bar. |
+| **True Multi-Monitor** | Native per-monitor fullscreen (`gtk_window_fullscreen_on_monitor`), cross-display app dragging (including mixed DPI/offsets), live in-session toggle (`Ctrl+Alt+M`), single unified Ubuntu Dock icon, and synchronized raise/minimize/restore across monitors. |
+| **Keyboard Grab & Vietnamese IME** | Full system shortcut capture (`Alt+Tab`, `Win`, `PrintScreen`, `Ctrl+Shift+Esc`), single tap-release `Right Ctrl` grab toggle (`Right Ctrl+C/V` stays in Windows), and raw scancode forwarding bypassing `GtkIMContext` so **UniKey/EVKey** inside Windows never conflicts with Ubuntu `ibus`/`fcitx5`. |
+| **Credentials & Profiles** | Quick Connect (`user@host:port`, `rdp://`, IPv6), Library filters (**All**, **Favorites**, **Recent**, **Groups**) & instant search, UTF-16LE/UTF-8 `.rdp` Import/Export, smart `DOMAIN\user` / `.\localuser` / UPN normalization + NetBIOS/IP NTLM without Kerberos, **Remember Last Username**, GNOME Keyring (`libsecret`), and Active Sessions switcher. |
+| **Device & Network Redirection** | Remote audio playback & microphone redirection, bidirectional text & image clipboard (+ FUSE3 file copy/paste on native `.deb`), Shared Folders (`\\tsclient`), local printers, Auto-Reconnect (1–50 attempts), Network Auto-Detect, and RD Gateway. |
+| **Universal Packaging** | Single `.flatpak` bundle running uniformly across Ubuntu 20.04–26.10 & other distros, plus lightweight native `.deb` packages for Ubuntu 24.04 LTS and Ubuntu 26.04 LTS / 26.10. |
+
+---
+
+## 2. Compatibility & Quick Installation
+
+- **Display Servers:** Supports both **Wayland** and **X11** (`x86_64` / `amd64`).
+- **Hardware Acceleration (Intel GPU):** Automatically sets `LIBVA_DRIVER_NAME=iHD` when Intel graphics + Intel VA-API drivers (`intel-media-va-driver` on host or `org.freedesktop.Platform.VAAPI.Intel` in Flatpak) are present.
+- **Credential Storage:** Uses `gnome-keyring` via `libsecret` (`org.freedesktop.secrets`, pre-installed on Ubuntu Desktop).
+
+### Package Comparison
+
+| Package | Supported OS | Bundled Runtime / Libs | Clipboard File Copy/Paste | Shared Folders (`\\tsclient`) |
+| --- | --- | --- | --- | --- |
+| **Universal Flatpak** *(Recommended)* | Ubuntu **20.04 – 26.10** & any Flatpak Linux | Self-contained GNOME 50 + FreeRDP 3.33.1 | Text & Images *(sandboxed)* | Yes (`--filesystem=home`) |
+| **Native `.deb` (`ubuntu26.04`)** | Ubuntu **26.04 LTS** & **26.10** | Uses system GTK4/FFmpeg + bundled FreeRDP 3.33.1 | Yes (**FUSE3** + Text/Images) | Yes |
+| **Native `.deb` (`ubuntu24.04`)** | Ubuntu **24.04 LTS** | Uses system GTK4/FFmpeg + bundled FreeRDP 3.33.1 | Yes (**FUSE3** + Text/Images) | Yes |
+
+### Option 1: Single-File Universal Installer — Flatpak (Recommended)
+
+One `.flatpak` file works across **Ubuntu 20.04, 22.04 LTS, 24.04 LTS, 26.04 LTS, 26.10** and other Linux distributions without system library mismatches:
 
 ```bash
-# Cài Flatpak nếu máy chưa có
+# Install Flatpak if not already installed
 sudo apt update && sudo apt install -y flatpak
 
-# Tải và cài đặt WinRDP (lần đầu Flatpak sẽ tự kéo runtime nền từ Flathub)
+# Download and install WinRDP (the first install pulls the base GNOME runtime from Flathub)
 wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/winrdp_1.3.0_x86_64.flatpak
 flatpak install --user -y ./winrdp_1.3.0_x86_64.flatpak
 ```
 
-Mở ứng dụng từ menu Ubuntu hoặc chạy `flatpak run io.winrdp.Client`.
+Launch **WinRDP** from the Ubuntu App Grid or terminal:
 
-- **Nâng cấp:** tải file `.flatpak` mới hơn và chạy lại `flatpak install --user -y --reinstall ./winrdp_<phiên_bản>_x86_64.flatpak`.
-- **Gỡ cài đặt:** `flatpak uninstall --user -y io.winrdp.Client`.
+```bash
+flatpak run io.winrdp.Client
+```
 
-### Cách 2: Gói `.deb` native (chỉ Ubuntu 24.04 LTS / 26.04 LTS / 26.10)
+- **Upgrade:** `flatpak install --user -y --reinstall ./winrdp_<version>_x86_64.flatpak`
+- **Uninstall:** `flatpak uninstall --user -y io.winrdp.Client`
 
-Nếu chỉ cài trên các bản Ubuntu mới và muốn file tải nhỏ gọn (~2 MB), tải đúng bản `.deb` tại **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)**:
+### Option 2: Native `.deb` Packages (Ubuntu 24.04 LTS / 26.04 LTS / 26.10)
 
-- **Ubuntu 26.04 LTS / Ubuntu 26.10 (mới nhất):**
+Download the `.deb` matching your Ubuntu release from **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)**:
+
+- **Ubuntu 26.04 LTS / Ubuntu 26.10:**
 
 ```bash
 wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/winrdp_1.3.0_ubuntu26.04_amd64.deb
@@ -77,207 +116,234 @@ sudo apt update
 sudo apt install ./winrdp_1.3.0_ubuntu24.04_amd64.deb
 ```
 
-Kiểm tra toàn vẹn SHA-256 (tùy chọn cho cả `.flatpak` lẫn `.deb`):
+- **Upgrade / Uninstall:** `sudo apt install ./winrdp_<version>_ubuntu<distro>_amd64.deb` or `sudo apt remove winrdp`.
+
+### Verify Checksums (Optional, Applies to Both `.flatpak` & `.deb`)
 
 ```bash
 wget https://github.com/tienspextre/winrdp/releases/download/v1.3.0/SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
 ```
 
-- **Nâng cấp / Gỡ gói `.deb`:** chạy lại `sudo apt install ./winrdp_<phiên_bản>_ubuntu<bản>_amd64.deb` hoặc `sudo apt remove winrdp`.
-
 ---
 
-## Hướng dẫn sử dụng giao diện Connection Manager
+## 3. Connection Manager Guide
 
-Sau khi mở **WinRDP** từ menu ứng dụng Ubuntu hoặc chạy lệnh `winrdp`, màn hình quản lý kết nối gồm 4 khu vực chính:
+Open **WinRDP** from the application launcher or via terminal (`winrdp` or `flatpak run io.winrdp.Client`). The Connection Manager consists of four areas:
 
-### 1. Kết nối nhanh (Quick Connect)
-Ở thanh trên cùng của cửa sổ quản lý:
-- Nhập địa chỉ máy Windows vào ô **Quick Connect**, hỗ trợ các định dạng:
-  - IP / Tên máy: `192.168.1.50`, `win11-dev`
-  - Kèm tài khoản & cổng: `user@192.168.1.50`, `user@192.168.1.50:3390`
-  - Kèm domain & URI: `rdp://CORP\user@10.0.0.5:3389` hoặc `DOMAIN/user@host`
+### Quick Connect Bar
+Located in the top header bar:
+- Enter a target in the **Quick Connect** field. Supported formats:
+  - Hostname / IP: `192.168.1.50`, `win11-dev`
+  - With username & custom port: `user@192.168.1.50`, `user@192.168.1.50:3390`
+  - Full URI or domain: `rdp://CORP\user@10.0.0.5:3389`, `DOMAIN/user@host`
   - IPv6: `[fe80::1]:3389`
-- Bấm nút biểu tượng **Multi-Monitor** bên cạnh ô nhập để bật/tắt kết nối toàn bộ màn hình (mặc định **tự bật sẵn** nếu máy Ubuntu đang cắm từ 2 màn hình trở lên).
-- Nhấn `Enter` hoặc bấm **Connect**.
+- Toggle the **Multi-Monitor** icon button beside the input to connect across all monitors (**automatically enabled** when 2 or more displays are connected).
+- Press `Enter` or click **Connect**.
 
-### 2. Quản lý & Sắp xếp Profile
-- **Tạo mới (`+`):** mở hộp thoại cấu hình 5 tab và lưu lại để dùng lâu dài.
-- **Kết nối:** bấm nút **Connect** hoặc **double-click** vào thẻ kết nối.
-- **Sửa / Yêu thích / Xóa:** trên mỗi thẻ có nút sao yêu thích (`★`), nút sửa (biểu tượng bút), nút xuất `.rdp` và nút xóa (biểu tượng thùng rác).
-- **Cột trái (Library):** lọc theo **All Connections**, **Favorites**, **Recent**, hoặc từng **Group** bạn đặt tên trong profile.
-- **Tìm kiếm (`🔍`):** lọc nhanh theo tên profile, hostname/IP, username hoặc group.
+### Connection Library & Profiles
+- **Create (`+`):** Opens the 5-tab profile editor to save reusable connections.
+- **Connect:** Click **Connect** or **double-click** any connection card.
+- **Card Actions:** Star (`★` Favorite), Edit (pencil icon), Export `.rdp` (save icon), and Delete (trash icon).
+- **Left Sidebar (Library):** Filter by **All Connections**, **Favorites**, **Recent**, or custom **Groups**.
+- **Search (`🔍`):** Filter instantaneously by display name, hostname/IP, username, or group.
 
-### 3. Nhập & Xuất file `.rdp` Windows
-- **Import .rdp File (biểu tượng mở thư mục):** đọc trực tiếp file `.rdp` xuất từ `mstsc.exe` trên Windows (hỗ trợ cả mã hóa **UTF-16LE**, **UTF-8**, và tham số `selectedmonitors`, `displayconnectionbar`, `use multimon`).
-- **Export .rdp (biểu tượng lưu trên từng thẻ):** xuất profile ra file `.rdp` để mở trên máy Windows hoặc sao lưu.
+### Windows `.rdp` Import & Export
+- **Import .rdp File (folder icon):** Opens standard `.rdp` files saved by Windows `mstsc.exe`, supporting **UTF-16LE** and **UTF-8** encodings as well as `selectedmonitors`, `displayconnectionbar`, and `use multimon`.
+- **Export .rdp (card button):** Exports a saved profile to `.rdp` for backup or sharing with Windows users.
 
-### 4. Thanh Active Sessions (Chuyển nhanh về phiên đang chạy)
-Khi có ít nhất một phiên RDP đang kết nối, thanh **Active Sessions** xuất hiện ngay dưới thanh tiêu đề của Connection Manager:
-- Bấm vào tên phiên để **đưa thẳng cửa sổ remote lên trước / khôi phục nếu đang thu nhỏ** (kể cả khi dùng nhiều màn hình).
-- Bấm nút `×` cạnh tên phiên để ngắt kết nối nhanh.
+### Active Sessions Bar
+When at least one RDP session is running, an **Active Sessions** bar appears directly below the Connection Manager header:
+- Click a session pill to **raise and focus (or unminimize)** that session window immediately — including all screens of a multi-monitor session.
+- Click `×` on a pill to disconnect that session cleanly.
 
 ---
 
-## Giải thích chi tiết 5 tab cấu hình Profile
+## 4. Profile Settings Reference (5 Tabs)
 
-Khi bấm **New Connection (`+`)** hoặc **Edit Connection**, hộp thoại có 5 tab:
+Click **New Connection (`+`)** or **Edit** to configure all five tabs:
 
-### 1. Tab **General**
-- **Display Name / Group / Favorite:** tên hiển thị, tên nhóm gom ở sidebar trái và ghim vào mục yêu thích.
-- **PC Name / Host / IP & RDP Port:** địa chỉ máy đích và cổng (mặc định `3389`).
-- **Username / Domain / Password:** thông tin đăng nhập Windows. Hỗ trợ cả nhập tách riêng **Username** + **Domain** hoặc gõ trực tiếp dạng `DOMAIN\user` / `.\localuser` / UPN `user@domain.vn` ở ô Username (tự chuẩn hóa sạch trước khi xác thực và dùng NTLM trực tiếp cho Domain NetBIOS / IP khi máy Ubuntu chưa cấu hình Kerberos).
-- **Remember Last Username:** tự lưu lại Username + Domain vừa dùng gần nhất khi bấm **Connect** (hỗ trợ cả khi **tắt** lưu mật khẩu để lần sau không phải gõ lại tên đăng nhập).
-- **Save Password in GNOME Keyring:** lưu mật khẩu mã hóa qua `libsecret` (không bao giờ lưu chữ thô trong file JSON).
+### Tab 1: General
+- **Display Name / Group (optional) / Favorite:** Card label, sidebar group name, and favorite pin.
+- **PC Name / Host / IP & RDP Port:** Target Windows address and port (default `3389`).
+- **Username / Domain (optional) / Password:** Windows credentials. You may enter **Username** and **Domain** separately, or type `DOMAIN\user`, `.\localuser`, or a UPN (`user@corp.local`) directly into **Username** — WinRDP normalizes credentials automatically and uses NTLM directly for NetBIOS domains and IP targets even when Ubuntu has no Kerberos `krb5.conf` configured.
+- **Remember Last Username:** Saves the last used Username + Domain upon pressing **Connect** (also works when **Save Password** is disabled so you do not have to re-type your login name each time).
+- **Save Password in GNOME Keyring:** Encrypts the password via `libsecret`; passwords are never written in plaintext to JSON.
 
-### 2. Tab **Display**
+### Tab 2: Display
 - **Display Mode:**
-  - `Fullscreen (Single Monitor)`: toàn màn hình trên 1 màn hình Ubuntu.
-  - `Windowed`: chạy trong cửa sổ thông thường có thanh tiêu đề để kéo/resize.
-  - `Multi-Monitor (Fullscreen)`: mở rộng Windows lên nhiều màn hình Ubuntu.
-- **Resolution Preset & Desktop Width/Height:** chọn độ phân giải khởi tạo (có sẵn preset `1920x1080`, `2560x1440`, `3840x2160`, `1600x900`, `1280x720` hoặc nhập tay).
-- **Dynamic Resolution (`MS-RDPEDISP`):** tự động đổi độ phân giải desktop Windows cho vừa khít khi bạn kéo cỡ cửa sổ hoặc chuyển Fullscreen/Windowed.
-- **Smart Sizing:** co giãn hình ảnh Windows để vừa khung cửa sổ (khuyên **tắt** khi muốn chữ 1:1 sắc nét nhất, hoặc bật khi xem màn hình remote độ phân giải lớn trong cửa sổ nhỏ).
+  - `Fullscreen (Single Monitor)`: Fullscreen on one Ubuntu monitor.
+  - `Windowed`: Resizable window with native Ubuntu title bar.
+  - `Multi-Monitor (Fullscreen)`: Span native fullscreen Windows desktop across multiple displays.
+- **Resolution Preset & Desktop Width / Height:** Pick `Custom / Native` or presets (`1920 x 1080`, `2560 x 1440`, `3840 x 2160`, `1600 x 900`, `1280 x 720`).
+- **Dynamic Resolution (`MS-RDPEDISP`):** Automatically updates the Windows desktop resolution when resizing the window or toggling Fullscreen/Windowed.
+- **Smart Sizing:** Smoothly scales the remote desktop to fit the window. Leave **off** for razor-sharp 1:1 pixels (`GL_NEAREST`), or turn **on** when viewing a larger remote screen inside a smaller window.
 - **Remote Windows DPI Scaling:** `Auto`, `100%`, `125%`, `150%`, `200%`.
-- **Pin Connection Bar & Hide Connection Bar (Hotkey-Only):** hai công tắc độc lập điều khiển thanh Connection Bar khi fullscreen:
-  - `Hide = Tắt, Pin = Tắt` (**Auto-hide**): mặc định ẩn, rê chuột vào mép trên giữa màn hình sẽ trượt xuống và tự ẩn khi rời chuột.
-  - `Hide = Bật, Pin = Tắt` (**Hotkey-Only**): tắt kích hoạt bằng chuột ở mép trên; **chỉ dùng `Ctrl+Alt+Home`** để hiện thanh (sau khi hiện sẽ tự ẩn lại nếu không tương tác / rời chuột hoặc bấm `Ctrl+Alt+Home` lần nữa).
-  - `Pin = Bật` *(bất kể `Hide` bật hay tắt)*: thanh Connection Bar **luôn hiển thị**. Nếu bật cả `Hide` và `Pin`, thanh vẫn luôn hiện cho tới khi bạn bỏ ghim (`Unpin`), lúc đó sẽ ẩn ngay và quay về chế độ `Ctrl+Alt+Home`.
+- **Pin Connection Bar & Hide Connection Bar (Hotkey-Only):** Two independent switches controlling fullscreen Connection Bar visibility:
+
+| `Hide Connection Bar` | `Pin Connection Bar` | Fullscreen Behavior |
+| --- | --- | --- |
+| **Off** | **Off** | **Auto-Hide:** Hidden by default; hover top-center edge to reveal, hides automatically when pointer leaves. |
+| **On** | **Off** | **Hotkey-Only:** Top-edge hover disabled; press **`Ctrl+Alt+Home`** to show, auto-hides after use or on `Ctrl+Alt+Home`. |
+| **Off** or **On** | **On** | **Always Visible:** Stays pinned on screen. If **Hide** is also On, unpinning immediately hides the bar and returns to `Ctrl+Alt+Home` mode. |
+
 - **Monitors:**
-  - Khi chọn `Multi-Monitor`: giữ bật **Use All Connected Monitors** để dùng tất cả màn hình, hoặc tắt đi để tích chọn riêng từng màn hình cụ thể.
-  - Khi chọn `Fullscreen (Single Monitor)`: mục **Target Fullscreen Monitor** cho phép cố định màn hình Ubuntu nào sẽ hiển thị phiên remote.
+  - In `Multi-Monitor (Fullscreen)`: Enable **Use All Connected Monitors** to span every local display, or disable it to pick specific monitors individually.
+  - In `Fullscreen (Single Monitor)`: Choose **Target Fullscreen Monitor** to lock fullscreen onto a specific Ubuntu display.
 
-### 3. Tab **Resources**
-- **Remote Audio Playback:** phát âm thanh Windows ra loa Ubuntu (`Play on this computer`), để trên máy từ xa, hoặc tắt tiếng.
-- **Redirect Microphone:** chuyển micro của Ubuntu vào Windows để họp/gọi.
-- **Clipboard (Text & Images) & Clipboard File Copy/Paste:** copy/paste văn bản, hình ảnh và file 2 chiều (chép file thông qua FUSE3).
-- **Redirect Local Printers:** chia sẻ máy in cục bộ vào phiên Windows.
-- **Capture System Shortcuts:** chọn lúc nào phím hệ thống (`Win`, `Alt+Tab`, `PrintScreen`, `Ctrl+Shift+Esc`) được gửi thẳng vào Windows: `Only in Fullscreen` (khuyên dùng), `Always when focused` (kể cả lúc windowed), hoặc `Never`.
-- **Release Keyboard Grab Key:** chọn phím bấm-nhả đơn để thả/bắt lại bàn phím (`Right Ctrl`, `Right Alt`, hoặc `Scroll Lock`).
-- **Shared Folders (`\\tsclient`):** bấm **Add Folder** để chia sẻ thư mục Ubuntu vào Windows; bên trong Windows mở File Explorer và gõ `\\tsclient` để truy cập.
+### Tab 3: Resources
+- **Remote Audio Playback:** `Play on this computer (Ubuntu)`, `Play on remote Windows`, or `Do not play`.
+- **Redirect Microphone:** Forward Ubuntu microphone input to Windows apps and calls.
+- **Clipboard (Text & Images):** Bidirectional text and image copy/paste.
+- **Clipboard File Copy/Paste:** Bidirectional file copy/paste via **FUSE3** *(available on native `.deb` / source builds; in the sandboxed Flatpak build, use **Shared Folders (`\\tsclient`)** for file transfers)*.
+- **Redirect Local Printers:** Expose local Ubuntu printers to the Windows session.
+- **Capture System Shortcuts (`Win`, `Alt+Tab`, `PrtSc`):** `Only in Fullscreen` *(recommended)*, `Always when focused`, or `Never`.
+- **Release Keyboard Grab Key:** Single-tap release/re-grab key (`Right Ctrl`, `Right Alt`, or `Scroll Lock`).
+- **Shared Folders (`\\tsclient`):** Click **Add Folder** to mount Ubuntu directories inside Windows File Explorer under `\\tsclient`.
 
-### 4. Tab **Experience**
-- **Graphics Codec:** khuyên giữ `Auto (AVC444 -> AVC420 -> RemoteFX)` hoặc chọn `H.264 / AVC444` (chữ sắc nét + 60fps). Nếu mạng rất chậm có thể chọn `AVC420` hoặc `RemoteFX`.
-- **Hardware Video Decode (Intel VA-API):** giảm tải CPU bằng GPU Intel UHD/Iris.
-- **Tùy chọn hiển thị Windows:** ClearType Font Smoothing, Desktop Composition, Show Window Contents While Dragging, Menu & Window Animations, Desktop Background Wallpaper.
-- **Auto-Reconnect on Drop & Max Reconnect Attempts:** tự động kết nối lại tối đa 1–50 lần khi rớt mạng tạm thời mà không làm thoát fullscreen.
-- **Network Auto-Detect:** đo độ trễ (RTT ms) và chất lượng đường truyền hiển thị trên Connection Bar.
+### Tab 4: Experience
+- **Graphics Codec:** Keep `Auto (AVC444 -> AVC420 -> RemoteFX)` *(recommended)* or pick `H.264 / AVC444 (Crisp text + 60fps)`, `H.264 / AVC420 (Low bandwidth)`, `RemoteFX (Classic GFX)`, or `Standard GDI (Legacy)`.
+- **Hardware Video Decode (Intel VA-API):** Offloads H.264/AVC444 decoding to Intel UHD/Iris GPUs.
+- **Visual Options:** Font Smoothing (ClearType), Desktop Composition, Show Window Contents While Dragging, Menu & Window Animations, Desktop Background Wallpaper.
+- **Auto-Reconnect on Drop & Max Reconnect Attempts:** Automatically reconnects (1–50 attempts) after transient network drops without leaving fullscreen.
+- **Network Auto-Detect (Live Latency/RTT):** Measures real-time round-trip latency and connection quality on the Connection Bar.
 
-### 5. Tab **Advanced**
-- **Security Layer:** `Auto Negotiate`, `NLA (CredSSP — Recommended)`, `TLS`, hoặc `Classic RDP`.
-- **Ignore Certificate Warnings:** bỏ qua hộp thoại xác nhận chứng chỉ TLS tự ký (nên tắt nếu kết nối máy công cộng không tin cậy).
-- **RD Gateway Server:** cấu hình địa chỉ Gateway, cổng (mặc định `443`), và tùy chọn dùng chung hoặc tách riêng tài khoản Gateway.
-
----
-
-## Hướng dẫn thao tác trong phiên Remote Desktop
-
-### 1. Chế độ Fullscreen & Thanh Connection Bar
-Khi vào Fullscreen, hành vi thanh **Connection Bar** phụ thuộc 2 nút **Pin (Ghim)** và **Hide (Mũi tên lên)**:
-- **Auto-hide (`Pin` tắt, `Hide` tắt):** rê chuột lên sát **mép trên giữa màn hình** để trượt thanh xuống; rời chuột thanh tự ẩn.
-- **Hotkey-Only Hide (`Pin` tắt, `Hide` bật):** mặc định ẩn và không hiện khi rê chuột; nhấn `Ctrl+Alt+Home` để mở/đóng nhanh (và tự ẩn lại sau khi dùng xong).
-- **Ghim (`Pin` bật, dù `Hide` bật hay tắt):** thanh **luôn hiển thị**. Nếu vừa bật `Hide` vừa bật `Pin`, sau khi bỏ ghim thanh sẽ tự ẩn ngay về chế độ `Ctrl+Alt+Home`.
-- **Biểu tượng sóng + huy hiệu Codec:** rê chuột để xem chi tiết độ phân giải, codec (`AVC444 VA`, `AVC420`, `RFX`), độ trễ RTT (ms) và FPS thực tế.
-- **Bàn phím (Capture):** bật/tắt bắt phím hệ thống (`Alt+Tab`, `Win`).
-- **Ổ khóa (`Send Ctrl+Alt+Del`):** gửi tổ hợp `Ctrl+Alt+Del` tới màn hình đăng nhập/khóa Windows.
-- **Kính lúp (`Smart Sizing`):** chuyển nhanh giữa tỷ lệ nét 1:1 và co giãn vừa khung hình.
-- **Thu nhỏ / Đa màn hình / Thoát Fullscreen / Đóng (`X`).**
-
-### 2. Chế độ Windowed (Cửa sổ có thanh tiêu đề)
-Nhấn `Ctrl+Alt+Enter` hoặc nút Restore trên Connection Bar để thoát sang chế độ cửa sổ:
-- Cửa sổ tự thu kích thước gọn và căn **chính giữa màn hình** trong vùng làm việc usable (*workarea*, cách đều dưới thanh panel trên cùng của Ubuntu — kể cả trên **X11 đơn/đa màn hình** lẫn **Wayland**) để phần thanh tiêu đề gốc (`AdwHeaderBar`) luôn thoáng và kéo di chuyển dễ dàng.
-- Phía trên thanh tiêu đề hiển thị độ phân giải/codec/FPS hiện tại cùng bộ nút nhanh (Capture bàn phím, `Ctrl+Alt+Del`, Smart Sizing, Multi-Monitor, vào lại Fullscreen).
-
-### 3. Sử dụng Nhiều màn hình (Multi-Monitor)
-- **Tự bật khi kết nối:** nếu profile chọn `Multi-Monitor` hoặc Quick Connect đang bật nút Multi-Monitor, WinRDP tự mở rộng Windows ra tất cả màn hình đã chọn ngay khi kết nối xong.
-- **Bật/tắt nóng ngay trong phiên:** nhấn `Ctrl+Alt+M` hoặc bấm nút Multi-Monitor để chuyển qua lại giữa 1 màn hình và nhiều màn hình mà không phải ngắt kết nối.
-- **Kéo thả ứng dụng Windows giữa các màn:** nắm thanh tiêu đề bất kỳ app Windows nào và kéo thẳng sang màn hình kia (hỗ trợ cả khi 2 màn khác độ phân giải, khác tỷ lệ DPI hoặc đặt lệch trái/phải).
-- **Chuyển đổi giữa Ubuntu và Windows nhiều màn hình:**
-  - Trên **Ubuntu Dock / Alt+Tab**, cả phiên đa màn hình được gom gọn thành **1 cửa sổ phiên remote** (không tách lẻ 2–3 cửa sổ).
-  - Khi bạn chuyển sang dùng một ứng dụng Ubuntu ở màn 1 rồi muốn quay lại Windows, chỉ cần **bấm chuột hoặc Alt+Tab vào bất kỳ màn hình nào** của WinRDP — toàn bộ các màn hình còn lại của phiên remote sẽ tự động nổi lên lại cùng lúc.
-  - Thu nhỏ (`Super+H` hoặc nút Minimize) và khôi phục cũng đồng bộ trên tất cả các màn hình.
-
-### 4. Bắt phím Windows & Gõ tiếng Việt chuẩn
-- Khi **Keyboard Grab** đang bật (mặc định tự bật ở Fullscreen): mọi tổ hợp như `Alt+Tab`, `Win+D`, `Win+R`, `Ctrl+Shift+Esc`, `PrintScreen` đều đi thẳng vào Windows.
-- Nếu muốn bấm phím `Alt+Tab` hay `Super` ra ngoài Ubuntu mà không cần thoát Fullscreen: **bấm và thả ngay phím `Right Ctrl`** (không giữ cùng phím khác). Bấm `Right Ctrl` một lần nữa để bắt phím trở lại vào Windows. *(Khi gõ `Right Ctrl + C`, `Right Ctrl + V`..., phím Ctrl phải vẫn gửi vào Windows bình thường.)*
-- **Gõ tiếng Việt:** tắt hoặc chuyển bộ gõ Ubuntu (`ibus` / `fcitx5`) về tiếng Anh khi focus cửa sổ WinRDP và dùng UniKey/EVKey trực tiếp bên trong Windows — WinRDP truyền phím thô không qua `GtkIMContext` nên không bị nhân đôi ký tự hay kẹt dấu.
+### Tab 5: Advanced
+- **Security Layer:** `Auto Negotiate`, `NLA (CredSSP — Recommended)`, `TLS`, or `Classic RDP`.
+- **Ignore Certificate Warnings:** Automatically accept self-signed TLS certificates *(disable on untrusted networks)*.
+- **RD Gateway Server:** Optional Gateway hostname, port (default `443`), and option to share or separate Gateway credentials.
 
 ---
 
-## Phím tắt mặc định
+## 5. In-Session Guide
 
-| Phím tắt | Chức năng |
+### Fullscreen & Connection Bar
+In fullscreen mode, the Connection Bar sits cleanly inside the single session overlay:
+- **Pin (`📌`):** Keep the bar permanently visible or allow auto-hiding.
+- **Signal Icon + Codec Badge:** Hover to inspect live resolution, codec (`AVC444 VA`, `AVC420`, `RFX`), RTT latency (`ms`), and actual `fps`.
+- **Keyboard Icon:** Toggle system shortcut capture (`Alt+Tab`, `Win`).
+- **Lock Icon (`Send Ctrl+Alt+Del`):** Send `Ctrl+Alt+Del` to the Windows lock/login screen.
+- **Zoom Icon (`Smart Sizing`):** Toggle 1:1 sharpness vs window fit scaling.
+- **Hide (`^`):** Collapse bar (when unpinned, switches/arms Hotkey-Only reveal via `Ctrl+Alt+Home`).
+- **Minimize / Multi-Monitor / Restore (`Windowed`) / Close (`×`).**
+
+### Windowed Mode
+Press `Ctrl+Alt+Enter` or click Restore on the Connection Bar:
+- WinRDP sizes the window cleanly and centers it inside your **usable workarea** — evenly positioned below the Ubuntu top bar on both **X11** and **Wayland** so the native `AdwHeaderBar` never hides behind system panels.
+- The header bar displays live session metrics (resolution, codec, FPS) alongside quick toolbar controls (Keyboard Capture, `Ctrl+Alt+Del`, Smart Sizing, Multi-Monitor, Re-enter Fullscreen).
+
+### Multi-Monitor Workflows
+- **Automatic Span on Connect:** Connecting with a multi-monitor profile or Quick Connect Multi-Monitor active expands Windows across your selected Ubuntu monitors automatically.
+- **Hot Toggle Without Disconnecting:** Press `Ctrl+Alt+M` (or click the Multi-Monitor button) mid-session to switch between 1 monitor and multi-monitor seamlessly.
+- **Cross-Screen Window Dragging:** Drag Windows app windows freely across monitors, even with mixed resolutions, DPI scales, or display offsets.
+- **Unified Ubuntu Dock & Group Raising:** All screens of a session appear under **one single window group** on the Ubuntu Dock / `Alt+Tab`. Clicking or focusing any WinRDP monitor brings all monitors of that session forward together; minimizing restores and minimizes them in sync.
+
+### Keyboard Grab & Vietnamese IME (`UniKey` / `EVKey`)
+- **Full Windows Shortcuts:** When Keyboard Grab is active (default in Fullscreen), `Alt+Tab`, `Win+D`, `Win+R`, `Ctrl+Shift+Esc`, and `PrintScreen` go directly to Windows.
+- **Quick Return to Ubuntu:** **Tap and release `Right Ctrl` alone** to release keyboard grab back to Ubuntu without exiting fullscreen; tap `Right Ctrl` again to resume capture. *(Combos such as `Right Ctrl + C` or `Right Ctrl + V` still execute normally in Windows.)*
+- **Clean Vietnamese Input:** Set Ubuntu's host input source (`ibus` / `fcitx5`) to English while focused in WinRDP and type with **UniKey** or **EVKey** directly inside Windows. Because WinRDP dispatches raw scancodes without `GtkIMContext`, characters are never duplicated or dropped.
+
+---
+
+## 6. Keyboard Shortcuts
+
+| Shortcut | Action |
 | --- | --- |
-| `Ctrl + Alt + Home` *(hoặc `Pause`)* | Ẩn / hiện nhanh thanh Connection Bar (hoạt động cả khi đang ẩn hoàn toàn) |
-| `Ctrl + Alt + Enter` | Chuyển đổi nhanh giữa **Fullscreen** và **Windowed** |
-| `Ctrl + Alt + M` | Bật / tắt chế độ **Nhiều màn hình (Multi-Monitor)** ngay trong phiên |
-| `Ctrl + Alt + G` | Bật / tắt bắt phím hệ thống (`Win`, `Alt+Tab`, `Ctrl+Shift+Esc`) |
-| `Right Ctrl` *(bấm nhả đơn)* | Nhả / bắt lại bàn phím giữa Ubuntu và Windows (đổi phím được trong tab Resources) |
+| `Ctrl + Alt + Home` *(or `Pause`)* | Show / hide the fullscreen Connection Bar (also reveals in Hotkey-Only mode) |
+| `Ctrl + Alt + Enter` | Toggle between **Fullscreen** and **Windowed** mode |
+| `Ctrl + Alt + M` | Toggle **Multi-Monitor** mode live inside an active session |
+| `Ctrl + Alt + G` | Toggle system key capture (`Win`, `Alt+Tab`, `Ctrl+Shift+Esc`) |
+| `Right Ctrl` *(single tap-release)* | Release / re-capture keyboard focus between Ubuntu and Windows *(configurable in Resources)* |
 
 ---
 
-## Sử dụng qua dòng lệnh CLI
+## 7. Command-Line Interface (CLI)
 
-Cú pháp chung: `winrdp [tùy_chọn] [file.rdp | rdp://... | user@host[:port]]`
+Use either **`winrdp`** (native `.deb` / source install) or **`flatpak run io.winrdp.Client`** (Flatpak):
 
-| Cờ dòng lệnh | Mô tả |
+```text
+winrdp [options] [file.rdp | rdp://... | user@host[:port]]
+```
+
+| Flag | Description |
 | --- | --- |
-| `-v`, `--version` | In phiên bản WinRDP, FreeRDP và trạng thái hỗ trợ H.264/VA-API |
-| `--list-monitors` | Liệt kê chỉ số (`[0]`, `[1]`...), tên cổng kết nối, độ phân giải, tọa độ và tỷ lệ DPI từng màn hình Ubuntu |
-| `-m`, `--multimon` | Bắt buộc mở phiên ở chế độ nhiều màn hình (Multi-Monitor Fullscreen) |
-| `--monitors <0,1,...>` | Chỉ chọn các chỉ số màn hình cụ thể (tự bật Multi-Monitor nếu chọn ≥ 2 màn hình) |
-| `-f`, `--fullscreen` | Bắt buộc mở toàn màn hình trên 1 màn hình |
-| `-w`, `--windowed` | Bắt buộc mở ở chế độ cửa sổ có thanh tiêu đề |
-| `--no-bar` | Ẩn hoàn toàn Connection Bar khi fullscreen (`Ctrl+Alt+Home` để mở lại) |
-| `--pinned-bar` | Ghim thanh Connection Bar luôn hiển thị khi fullscreen |
-| `--smoke-test` | Chạy bài kiểm tra tự động OpenGL 3.3, dual-canvas đa màn hình, HeaderBar, identity và VA-API |
+| `-v`, `--version` | Print WinRDP version, bundled FreeRDP version, and H.264/HWAccel status |
+| `--list-monitors` | List monitor indices (`[0]`, `[1]`...), connector names, resolutions, coordinates, and DPI scale |
+| `-m`, `--multimon` | Force Multi-Monitor Fullscreen mode |
+| `--monitors <0,1,...>` | Select specific monitor indices (auto-enables Multi-Monitor when 2 or more are given) |
+| `-f`, `--fullscreen` | Force Single-Monitor Fullscreen mode |
+| `-w`, `--windowed` | Force Windowed mode with native header bar |
+| `--no-bar` | Hide Connection Bar in fullscreen (`Ctrl+Alt+Home` reveals) |
+| `--pinned-bar` | Pin Connection Bar always visible in fullscreen |
+| `--smoke-test` | Run self-test verifying OpenGL 3.3, dual-canvas multi-monitor, HeaderBar, identity & VA-API |
 
-**Ví dụ:**
+**Examples:**
 
 ```bash
-winrdp                              # Mở giao diện Connection Manager
-winrdp server.rdp                   # Kết nối trực tiếp bằng file .rdp
-winrdp rdp://user@192.168.1.50      # Kết nối nhanh qua URI RDP
-winrdp --multimon user@10.0.0.5     # Kết nối tràn toàn bộ màn hình Ubuntu
-winrdp --monitors 0,1 user@10.0.0.5 # Chỉ dùng màn hình 0 và 1 (xem chỉ số bằng --list-monitors)
-winrdp --fullscreen --no-bar 10.0.0.5
+# Native install
+winrdp                                  # Launch Connection Manager
+winrdp workstation.rdp                  # Connect directly from a .rdp file
+winrdp rdp://user@192.168.1.50          # Quick URI connect
+winrdp --multimon user@10.0.0.5         # Span across all monitors
+winrdp --monitors 0,1 user@10.0.0.5     # Use monitors 0 and 1 (check indices via --list-monitors)
+winrdp --fullscreen --no-bar 10.0.0.5   # Fullscreen with Hotkey-Only bar
 winrdp --windowed admin@192.168.1.20:3390
+
+# Universal Flatpak install
+flatpak run io.winrdp.Client --list-monitors
+flatpak run io.winrdp.Client --multimon user@10.0.0.5
+flatpak run io.winrdp.Client --smoke-test
 ```
 
 ---
 
-## Vị trí lưu dữ liệu & Xử lý sự cố thường gặp
+## 8. Configuration Storage & Troubleshooting
 
-### Vị trí lưu cấu hình
-- **Danh sách kết nối:** `~/.config/winrdp/profiles.json`
-- **Mật khẩu:** lưu mã hóa trong **GNOME Keyring** (`libsecret`), không ghi vào file JSON.
+### Configuration & Secret Locations
 
-### Xử lý sự cố nhanh
+| Item | Native (`.deb` / Source) | Universal Flatpak (`io.winrdp.Client`) |
+| --- | --- | --- |
+| **Connection Profiles (`profiles.json`)** | `~/.config/winrdp/profiles.json` | `~/.var/app/io.winrdp.Client/config/winrdp/profiles.json` |
+| **Saved Passwords** | Encrypted in **GNOME Keyring** (`libsecret`) | Shared host **GNOME Keyring** (`org.freedesktop.secrets`) |
 
-1. **Chữ trên Windows hơi mờ hoặc bị răng cưa nhẹ:**
-   - Kiểm tra xem nút **Smart Sizing** (biểu tượng kính lúp) có đang bật không: hãy **tắt Smart Sizing** để hiển thị 1:1 theo từng pixel (`GL_NEAREST`).
-   - Trong tab **Experience**, ưu tiên codec `Auto` hoặc `H.264 / AVC444 (Crisp text + 60fps)`.
-   - Kiểm tra **Dynamic Resolution** đang bật để Windows tự khớp đúng độ phân giải thật của màn hình Ubuntu.
-2. **Đa màn hình không tự nhận đủ màn hình mong muốn:**
-   - Chạy `winrdp --list-monitors` trên terminal để kiểm tra Ubuntu có đang nhận đủ các màn hình vật lý và tọa độ không.
-   - Đảm bảo phiên Windows phía server là Windows Pro / Enterprise / Server (các bản Home hoặc Windows 7/8 không hỗ trợ đầy đủ đa màn hình `MS-RDPEDISP` hoặc không cho phép RDP server).
-3. **Kiểm tra tăng tốc phần cứng VA-API & OpenGL:**
-   - Chạy `winrdp --smoke-test` để xác nhận `OpenGL initialized: YES`, `H.264/FFmpeg GFX support: YES` và `LIBVA_DRIVER_NAME: iHD` (trên GPU Intel). Nếu thiếu driver VA-API Intel, cài thêm `sudo apt install intel-media-va-driver-non-free` hoặc `intel-media-va-driver`.
-4. **Không thấy thanh tiêu đề khi đang chạy hoặc không gõ phím trên Ubuntu được:**
-   - Nhấn `Ctrl+Alt+Enter` để chuyển giữa Fullscreen và Windowed.
-   - Bấm thả phím `Right Ctrl` nếu đang bị bắt phím vào Windows.
+### Common Troubleshooting
+
+1. **Text looks slightly soft or blurry:**
+   - Check the **Smart Sizing** button (magnifying glass icon) and turn it **off** for pixel-exact 1:1 rendering (`GL_NEAREST`).
+   - Under **Experience**, prefer `Auto` or `H.264 / AVC444 (Crisp text + 60fps)`.
+   - Keep **Dynamic Resolution (`MS-RDPEDISP`)** enabled so Windows adopts your exact native display resolution.
+2. **Multi-Monitor does not span all displays:**
+   - Run `winrdp --list-monitors` (or `flatpak run io.winrdp.Client --list-monitors`) to inspect detected displays and indices.
+   - Ensure the remote host runs **Windows Pro / Enterprise / Server** (Windows Home editions do not include an RDP server, and legacy Windows 7/8 lack full `MS-RDPEDISP` multi-monitor support).
+3. **Check hardware VA-API & OpenGL 3.3:**
+   - Run `winrdp --smoke-test` (or `flatpak run io.winrdp.Client --smoke-test`) and verify `OpenGL initialized: YES`, `H.264/FFmpeg GFX support: YES`, and `LIBVA_DRIVER_NAME: iHD` on Intel GPUs. On native Ubuntu installs, ensure `intel-media-va-driver` (or `intel-media-va-driver-non-free`) is installed.
+4. **Domain login (`DOMAIN\user`) fails or uses local credentials:**
+   - Leave **Domain** empty for local accounts, or enter `DOMAIN` in **Domain** (or `DOMAIN\user` in **Username**) for AD/NetBIOS domains. Enable **Remember Last Username** to persist the normalized login name without saving your password.
+5. **Can't see the window title bar or Ubuntu hotkeys stop responding:**
+   - Press `Ctrl+Alt+Enter` to toggle between Fullscreen and Windowed mode.
+   - Tap and release `Right Ctrl` once if Keyboard Grab is capturing system keys into Windows.
+6. **File copy/paste in Flatpak:**
+   - Flatpak isolates the sandbox from host FUSE mounts (`WITH_FUSE=OFF`), so clipboard handles text & images while file transfers use **Shared Folders (`\\tsclient`)** in Tab 3 (**Resources**). If you rely heavily on direct Explorer clipboard file copy/paste on Ubuntu 24.04–26.10, use the native `.deb` package.
 
 ---
 
-## Build từ mã nguồn & Đóng gói `.flatpak` / `.deb`
+## 9. Building from Source & Packaging
+
+**Stack:** C++20 &bull; GTK4 &bull; Libadwaita &bull; OpenGL 3.3 (`libepoxy`) &bull; FreeRDP `3.33.1` &bull; `libsecret` &bull; `cJSON` &bull; CMake + Ninja
 
 ```bash
-./scripts/install-deps.sh                     # Cài đặt thư viện build & phụ thuộc (chạy 1 lần)
-./scripts/build-freerdp3.sh                   # Build FreeRDP 3.33.1 (H.264 + VA-API + Pulse + FUSE3)
-./scripts/build-app.sh                        # Biên dịch WinRDP & chạy toàn bộ CTest unit tests
-./scripts/install-desktop.sh                  # Tích hợp nhanh vào ~/.local/bin & menu ứng dụng Ubuntu
-./scripts/build-flatpak.sh                    # Đóng gói 1 file Flatpak duy nhất chạy mọi bản Ubuntu
-./scripts/build-deb.sh                        # Đóng gói .deb cho Ubuntu đang chạy (dist/winrdp_<ver>_ubuntu<XX.XX>_amd64.deb)
-./scripts/build-deb-docker.sh --ubuntu 26.04  # Build & kiểm tra cài đặt sạch .deb cho Ubuntu 26.04 LTS & 26.10 qua Docker
+./scripts/install-deps.sh                     # Install build dependencies on Ubuntu (run once)
+./scripts/build-freerdp3.sh                   # Build bundled FreeRDP 3.33.1 (H.264 + VA-API + Pulse + FUSE3)
+./scripts/build-app.sh                        # Compile WinRDP and run all CTest unit tests
+./scripts/install-desktop.sh                  # Install local ~/.local/bin binary & desktop integration
+./scripts/build-flatpak.sh                    # Package single universal .flatpak bundle (all Ubuntu versions)
+./scripts/build-deb.sh                        # Package native .deb for current Ubuntu release
+./scripts/build-deb-docker.sh --ubuntu 26.04  # Build & verify native .deb for Ubuntu 26.04 & 26.10 via Docker
 ```
+
+---
+
+## 10. License
+
+WinRDP is licensed under the **[Apache License 2.0](LICENSE)**.
+Bundled third-party components include **FreeRDP 3.33.1** (Apache-2.0).
