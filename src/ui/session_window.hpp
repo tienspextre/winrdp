@@ -56,6 +56,8 @@ public:
 
     bool query_client_and_workarea_x11(int& client_x,
                                        int& client_y,
+                                       int& client_w,
+                                       int& client_h,
                                        int& work_x,
                                        int& work_y,
                                        int& work_w,
@@ -198,6 +200,7 @@ private:
     // Post-unfullscreen workarea placement
     guint reposition_timer_id_ = 0;
     bool pending_unfullscreen_reposition_ = false;
+    int reposition_attempts_ = 0;
 };
 
 } // namespace winrdp

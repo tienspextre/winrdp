@@ -8,11 +8,13 @@
 #include <gdk/x11/gdkx.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
 #endif
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 namespace winrdp {
@@ -87,6 +89,7 @@ bool query_monitor_workarea_x11(GdkDisplay* display,
     int mon_w = 1920;
     int mon_h = 1080;
     int scale = 1;
+    std::string conn_str;
     if (mon) {
         GdkRectangle geom{};
         gdk_monitor_get_geometry(mon, &geom);
@@ -95,11 +98,62 @@ bool query_monitor_workarea_x11(GdkDisplay* display,
         mon_y = geom.y * scale;
         mon_w = std::max(320, geom.width * scale);
         mon_h = std::max(200, geom.height * scale);
+        const char* conn = gdk_monitor_get_connector(mon);
+        if (conn) conn_str = conn;
         g_object_unref(mon);
     }
 
     out_scale = scale;
     const Window root = DefaultRootWindow(xdpy);
+
+    // Prefer exact XRandR monitor device-pixel bounds when available (matches X11 coordinates cleanly)
+    const int approx_cx = mon_x + mon_w / 2;
+    const int approx_cy = mon_y + mon_h / 2;
+    int nrr = 0;
+    XRRMonitorInfo* rrm = XRRGetMonitors(xdpy, root, True, &nrr);
+    if (rrm && nrr > 0) {
+        const XRRMonitorInfo* chosen = nullptr;
+        if (!conn_str.empty()) {
+            for (int k = 0; k < nrr; ++k) {
+                char* aname = XGetAtomName(xdpy, rrm[k].name);
+                const bool match = aname && (conn_str == aname);
+                if (aname) XFree(aname);
+                if (match) {
+                    chosen = &rrm[k];
+                    break;
+                }
+            }
+        }
+        if (!chosen) {
+            for (int k = 0; k < nrr; ++k) {
+                if (approx_cx >= rrm[k].x && approx_cx < rrm[k].x + rrm[k].width &&
+                    approx_cy >= rrm[k].y && approx_cy < rrm[k].y + rrm[k].height) {
+                    chosen = &rrm[k];
+                    break;
+                }
+            }
+        }
+        if (!chosen) {
+            for (int k = 0; k < nrr; ++k) {
+                if (rrm[k].primary != 0) {
+                    chosen = &rrm[k];
+                    break;
+                }
+            }
+        }
+        if (!chosen) {
+            chosen = &rrm[0];
+        }
+        if (chosen && chosen->width >= 320 && chosen->height >= 200) {
+            mon_x = chosen->x;
+            mon_y = chosen->y;
+            mon_w = chosen->width;
+            mon_h = chosen->height;
+        }
+    }
+    if (rrm) {
+        XRRFreeMonitors(rrm);
+    }
 
     unsigned long desktop = 0;
     const Atom cur_desk_atom = XInternAtom(xdpy, "_NET_CURRENT_DESKTOP", True);
@@ -147,26 +201,65 @@ bool query_monitor_workarea_x11(GdkDisplay* display,
         }
     }
 
+    int use_x = mon_x;
+    int use_y = mon_y + 40 * scale;
+    int use_w = mon_w;
+    int use_h = std::max(300, mon_h - 80 * scale);
     if (have_wa) {
         const int ix0 = std::max(mon_x, wa_x);
         const int iy0 = std::max(mon_y, wa_y);
         const int ix1 = std::min(mon_x + mon_w, wa_x + wa_w);
         const int iy1 = std::min(mon_y + mon_h, wa_y + wa_h);
         if (ix1 - ix0 >= 320 && iy1 - iy0 >= 200) {
-            out_x = ix0;
-            out_y = iy0;
-            out_w = ix1 - ix0;
-            out_h = iy1 - iy0;
-            return true;
+            use_x = ix0;
+            use_y = iy0;
+            use_w = ix1 - ix0;
+            use_h = iy1 - iy0;
         }
     }
 
-    // Fallback when _NET_WORKAREA is unavailable or didn't intersect
-    out_x = mon_x;
-    out_y = mon_y + 40 * scale;
-    out_w = mon_w;
-    out_h = std::max(300, mon_h - 80 * scale);
+    // Dual-monitor _NET_WORKAREA on GNOME/Ubuntu often reports wa_y == 0 despite the top panel
+    const int min_top_y = mon_y + 40 * scale;
+    if (use_y < min_top_y) {
+        const int delta = min_top_y - use_y;
+        use_y = min_top_y;
+        use_h = std::max(240, use_h - delta);
+    }
+
+    out_x = use_x;
+    out_y = use_y;
+    out_w = use_w;
+    out_h = use_h;
     return true;
+}
+
+void send_net_moveresize_x11(Display* xdpy,
+                             Window xwin,
+                             int outer_x,
+                             int outer_y,
+                             int outer_w,
+                             int outer_h) {
+    const Atom mr_atom = XInternAtom(xdpy, "_NET_MOVERESIZE_WINDOW", False);
+    if (mr_atom != None) {
+        // StaticGravity (10) | X | Y | Width | Height | normal application source (1 << 12)
+        const long flags = 10L | (1L << 8) | (1L << 9) | (1L << 10) | (1L << 11) | (1L << 12);
+        XEvent ev{};
+        ev.xclient.type = ClientMessage;
+        ev.xclient.serial = 0;
+        ev.xclient.send_event = True;
+        ev.xclient.message_type = mr_atom;
+        ev.xclient.window = xwin;
+        ev.xclient.format = 32;
+        ev.xclient.data.l[0] = flags;
+        ev.xclient.data.l[1] = outer_x;
+        ev.xclient.data.l[2] = outer_y;
+        ev.xclient.data.l[3] = outer_w;
+        ev.xclient.data.l[4] = outer_h;
+        const Window root = DefaultRootWindow(xdpy);
+        XSendEvent(xdpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    }
+    XMoveWindow(xdpy, xwin, outer_x, outer_y);
+    XFlush(xdpy);
 }
 
 void query_frame_extents_x11(Display* xdpy,
@@ -307,8 +400,22 @@ SessionWindow::SessionWindow(GtkApplication* app,
                     if (self->bar_) self->bar_->set_multimon(false, 1);
                 }
                 self->update_window_chrome();
-                self->pending_unfullscreen_reposition_ = true;
-                self->schedule_windowed_reposition(80);
+                gtk_window_unmaximize(GTK_WINDOW(self->window_));
+                gtk_window_set_default_size(
+                    GTK_WINDOW(self->window_), self->windowed_w_, self->windowed_h_);
+
+                GdkSurface* surf = gtk_native_get_surface(GTK_NATIVE(self->window_));
+                bool is_x11 = false;
+#ifdef GDK_WINDOWING_X11
+                is_x11 = surf && GDK_IS_X11_SURFACE(surf);
+#else
+                (void)surf;
+#endif
+                if (is_x11) {
+                    self->pending_unfullscreen_reposition_ = true;
+                    self->reposition_attempts_ = 0;
+                    self->schedule_windowed_reposition(60);
+                }
             } else if (fs && !self->is_fullscreen_) {
                 self->is_fullscreen_ = true;
                 self->pending_unfullscreen_reposition_ = false;
@@ -390,10 +497,6 @@ SessionWindow::~SessionWindow() {
 void SessionWindow::compute_initial_windowed_size() {
     GdkDisplay* display = window_ ? gtk_widget_get_display(GTK_WIDGET(window_)) : nullptr;
     const auto [mon_w, mon_h] = primary_logical_bounds(display);
-    const int max_w = std::max(640, (mon_w * 85) / 100);
-    const int max_h = std::min(
-        std::max(480, (mon_h * 80) / 100),
-        std::max(480, ((mon_h - 96) * 85) / 100));
 
     if (smoke_test_mode_) {
         windowed_w_ = std::clamp<int>(static_cast<int>(profile_.width), 320, 1920);
@@ -402,20 +505,18 @@ void SessionWindow::compute_initial_windowed_size() {
     }
 
     if (profile_.display_mode == DisplayMode::Windowed) {
+        const int max_w = std::max(640, mon_w - 120);
+        const int max_h = std::max(480, mon_h - 160);
         windowed_w_ = std::clamp<int>(static_cast<int>(profile_.width), 640, max_w);
         windowed_h_ = std::clamp<int>(static_cast<int>(profile_.height), 480, max_h);
         return;
     }
 
-    if (profile_.width >= 640 && profile_.height >= 480 &&
-        static_cast<int>(profile_.width) <= max_w &&
-        static_cast<int>(profile_.height) <= max_h) {
-        windowed_w_ = static_cast<int>(profile_.width);
-        windowed_h_ = static_cast<int>(profile_.height);
-    } else {
-        windowed_w_ = std::clamp<int>((mon_w * 78) / 100, 800, 1440);
-        windowed_h_ = std::clamp<int>((mon_h * 78) / 100, 560, 860);
-    }
+    // Leave generous margin around all screen edges and below Mutter's 80% auto-maximize threshold
+    const int cap_w = std::max(800, std::min(1360, mon_w - 160));
+    const int cap_h = std::max(500, std::min(760, mon_h - 180));
+    windowed_w_ = std::clamp<int>((mon_w * 72) / 100, 640, cap_w);
+    windowed_h_ = std::clamp<int>((mon_h * 70) / 100, 440, cap_h);
 }
 
 bool SessionWindow::is_header_bar_visible() const {
@@ -1242,13 +1343,13 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         gtk_widget_get_mapped(GTK_WIDGET(window_)) == TRUE &&
         gtk_window_is_maximized(GTK_WINDOW(window_)) == FALSE) {
         const auto [mon_w, mon_h] = primary_logical_bounds(display);
-        const int max_w = std::max(640, (mon_w * 85) / 100);
-        const int max_h = std::max(480, (mon_h * 80) / 100);
+        const int max_w = std::max(640, mon_w - 160);
+        const int max_h = std::max(440, mon_h - 180);
         const int cur_w = gtk_widget_get_width(GTK_WIDGET(window_));
         const int cur_h = gtk_widget_get_height(GTK_WIDGET(window_));
-        if (cur_w >= 640 && cur_h >= 480) {
+        if (cur_w >= 640 && cur_h >= 440) {
             windowed_w_ = std::clamp(cur_w, 640, max_w);
-            windowed_h_ = std::clamp(cur_h, 480, max_h);
+            windowed_h_ = std::clamp(cur_h, 440, max_h);
         }
     }
 
@@ -1483,12 +1584,61 @@ void SessionWindow::sync_monitor_windows(const VirtualDesktopLayout& layout, boo
         is_fullscreen_ = false;
         update_window_chrome();
 
-        pending_unfullscreen_reposition_ = true;
+        GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window_));
+        bool is_x11 = false;
+#ifdef GDK_WINDOWING_X11
+        is_x11 = surface && GDK_IS_X11_SURFACE(surface);
+#else
+        (void)surface;
+#endif
+
         gtk_window_unfullscreen(GTK_WINDOW(window_));
         gtk_window_unmaximize(GTK_WINDOW(window_));
         gtk_window_set_default_size(GTK_WINDOW(window_), windowed_w_, windowed_h_);
-        gtk_window_present(GTK_WINDOW(window_));
-        schedule_windowed_reposition(120);
+
+        if (is_x11 || smoke_test_mode_) {
+            pending_unfullscreen_reposition_ = is_x11;
+            reposition_attempts_ = 0;
+            gtk_window_present(GTK_WINDOW(window_));
+            if (is_x11) {
+                schedule_windowed_reposition(60);
+            }
+        } else {
+            // Wayland: recreate xdg_toplevel cleanly without poisoned fullscreen (0,0) saved_rect
+            pending_unfullscreen_reposition_ = false;
+            if (reposition_timer_id_ != 0) {
+                g_source_remove(reposition_timer_id_);
+                reposition_timer_id_ = 0;
+            }
+            gtk_widget_set_visible(GTK_WIDGET(window_), FALSE);
+            struct WaylandRemapCtx {
+                SessionWindow* self;
+                std::weak_ptr<Alive> alive;
+            };
+            auto* ctx = new WaylandRemapCtx{this, std::weak_ptr<Alive>(alive_)};
+            reposition_timer_id_ = g_timeout_add_full(
+                G_PRIORITY_DEFAULT,
+                30,
+                +[](gpointer data) -> gboolean {
+                    auto* c = static_cast<WaylandRemapCtx*>(data);
+                    if (auto a = c->alive.lock(); a && a->valid && !c->self->closing_) {
+                        SessionWindow* self = c->self;
+                        self->reposition_timer_id_ = 0;
+                        if (!self->is_fullscreen_ && self->window_) {
+                            gtk_window_set_default_size(
+                                GTK_WINDOW(self->window_), self->windowed_w_, self->windowed_h_);
+                            gtk_window_present(GTK_WINDOW(self->window_));
+                            if (self->canvas_) {
+                                self->canvas_->request_redraw();
+                                gtk_widget_grab_focus(self->canvas_->widget());
+                            }
+                        }
+                    }
+                    return G_SOURCE_REMOVE;
+                },
+                ctx,
+                +[](gpointer data) { delete static_cast<WaylandRemapCtx*>(data); });
+        }
     }
     sync_coordinated_grab();
 }
@@ -1511,9 +1661,25 @@ void SessionWindow::schedule_windowed_reposition(guint delay_ms) {
 }
 
 void SessionWindow::reposition_windowed_in_workarea() {
-    if (closing_ || !window_ || is_fullscreen_ ||
-        gtk_window_is_fullscreen(GTK_WINDOW(window_)) == TRUE ||
-        gtk_window_is_maximized(GTK_WINDOW(window_)) == TRUE) {
+    if (closing_ || !window_ || is_fullscreen_) {
+        pending_unfullscreen_reposition_ = false;
+        return;
+    }
+    if (gtk_window_is_fullscreen(GTK_WINDOW(window_)) == TRUE) {
+        if (reposition_attempts_++ < 8) {
+            schedule_windowed_reposition(80);
+        } else {
+            pending_unfullscreen_reposition_ = false;
+        }
+        return;
+    }
+    if (gtk_window_is_maximized(GTK_WINDOW(window_)) == TRUE) {
+        gtk_window_unmaximize(GTK_WINDOW(window_));
+        if (reposition_attempts_++ < 8) {
+            schedule_windowed_reposition(80);
+        } else {
+            pending_unfullscreen_reposition_ = false;
+        }
         return;
     }
 
@@ -1536,24 +1702,52 @@ void SessionWindow::reposition_windowed_in_workarea() {
             int ext_bottom = 0;
             query_frame_extents_x11(xdpy, xwin, ext_left, ext_right, ext_top, ext_bottom);
 
+            const int min_vis_w = smoke_test_mode_ ? 320 : 640;
+            const int min_vis_h = smoke_test_mode_ ? 240 : 440;
+            const int max_vis_w = std::max(min_vis_w, use_w - 80 * scale);
+            const int max_vis_h = std::max(min_vis_h, use_h - 80 * scale);
+            const int target_vis_w = std::clamp(windowed_w_ * scale, min_vis_w, max_vis_w);
+            const int target_vis_h = std::clamp(windowed_h_ * scale, min_vis_h, max_vis_h);
+
+            const int target_vis_x = use_x + std::max(0, (use_w - target_vis_w) / 2);
+            const int target_vis_y = use_y + std::max(0, (use_h - target_vis_h) / 2);
+            const int target_outer_x = target_vis_x - ext_left;
+            const int target_outer_y = target_vis_y - ext_top;
+            const int target_outer_w = target_vis_w + ext_left + ext_right;
+            const int target_outer_h = target_vis_h + ext_top + ext_bottom;
+
             XWindowAttributes attr{};
-            int vis_w = windowed_w_ * scale;
-            int vis_h = windowed_h_ * scale;
-            if (XGetWindowAttributes(xdpy, xwin, &attr)) {
-                if (attr.width > ext_left + ext_right) {
-                    vis_w = attr.width - ext_left - ext_right;
-                }
-                if (attr.height > ext_top + ext_bottom) {
-                    vis_h = attr.height - ext_top - ext_bottom;
+            int cur_rx = 0;
+            int cur_ry = 0;
+            Window child = None;
+            const bool have_attr = XGetWindowAttributes(xdpy, xwin, &attr) != 0;
+            const bool have_coords = XTranslateCoordinates(
+                xdpy, xwin, DefaultRootWindow(xdpy), 0, 0, &cur_rx, &cur_ry, &child) != 0;
+
+            const int cur_vis_x = cur_rx + ext_left;
+            const int cur_vis_y = cur_ry + ext_top;
+            const int cur_vis_w = have_attr ? (attr.width - ext_left - ext_right) : 0;
+            const int cur_vis_h = have_attr ? (attr.height - ext_top - ext_bottom) : 0;
+
+            const bool settled =
+                have_attr && have_coords &&
+                (ext_top > 0 || reposition_attempts_ >= 2) &&
+                std::abs(cur_vis_x - target_vis_x) <= 8 &&
+                std::abs(cur_vis_y - target_vis_y) <= 8 &&
+                std::abs(cur_vis_w - target_vis_w) <= 24 &&
+                std::abs(cur_vis_h - target_vis_h) <= 24 &&
+                cur_vis_y >= use_y;
+
+            if (!settled) {
+                gtk_window_set_default_size(
+                    GTK_WINDOW(window_), target_vis_w / scale, target_vis_h / scale);
+                send_net_moveresize_x11(
+                    xdpy, xwin, target_outer_x, target_outer_y, target_outer_w, target_outer_h);
+                if (reposition_attempts_++ < 6) {
+                    schedule_windowed_reposition(120);
+                    return;
                 }
             }
-
-            const int target_vis_x = use_x + std::max(0, (use_w - vis_w) / 2);
-            const int target_vis_y = use_y + std::max(0, (use_h - vis_h) / 2);
-            const int outer_x = target_vis_x - ext_left;
-            const int outer_y = target_vis_y - ext_top;
-            XMoveWindow(xdpy, xwin, outer_x, outer_y);
-            XFlush(xdpy);
         }
     }
 #endif
@@ -1562,6 +1756,8 @@ void SessionWindow::reposition_windowed_in_workarea() {
 
 bool SessionWindow::query_client_and_workarea_x11(int& client_x,
                                                   int& client_y,
+                                                  int& client_w,
+                                                  int& client_h,
                                                   int& work_x,
                                                   int& work_y,
                                                   int& work_w,
@@ -1592,12 +1788,20 @@ bool SessionWindow::query_client_and_workarea_x11(int& client_x,
     if (!XTranslateCoordinates(xdpy, xwin, DefaultRootWindow(xdpy), 0, 0, &rx, &ry, &child)) {
         return false;
     }
+    XWindowAttributes attr{};
+    if (!XGetWindowAttributes(xdpy, xwin, &attr)) {
+        return false;
+    }
     client_x = rx + ext_left;
     client_y = ry + ext_top;
+    client_w = std::max(0, attr.width - ext_left - ext_right);
+    client_h = std::max(0, attr.height - ext_top - ext_bottom);
     return true;
 #else
     (void)client_x;
     (void)client_y;
+    (void)client_w;
+    (void)client_h;
     (void)work_x;
     (void)work_y;
     (void)work_w;

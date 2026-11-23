@@ -30,7 +30,7 @@ namespace winrdp {
 namespace {
 
 #ifndef WINRDP_VERSION
-#define WINRDP_VERSION "1.1.5"
+#define WINRDP_VERSION "1.1.6"
 #endif
 
 constexpr const char* kFallbackCss = R"CSS(
@@ -468,10 +468,10 @@ int Application::run_smoke_test() {
                                 map_ok;
     const bool skip_taskbar_ok = has_skip_taskbar(GTK_WINDOW(sec_win));
 
-    // Verify fullscreen -> unfullscreen places client titlebar inside monitor workarea (never clipped at Y=0)
+    // Verify fullscreen -> unfullscreen places client titlebar inside monitor workarea & centered on screen
     bool unfullscreen_pos_ok = true;
-    int cx = 0, cy = 0, wx = 0, wy = 0, ww = 0, wh = 0;
-    if (sess_win->query_client_and_workarea_x11(cx, cy, wx, wy, ww, wh)) {
+    int cx = 0, cy = 0, cw = 0, ch = 0, wx = 0, wy = 0, ww = 0, wh = 0;
+    if (sess_win->query_client_and_workarea_x11(cx, cy, cw, ch, wx, wy, ww, wh)) {
         sess_win->apply_fullscreen_state(true);
         const auto fs_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
         while (std::chrono::steady_clock::now() < fs_deadline) {
@@ -495,10 +495,13 @@ int Application::run_smoke_test() {
             }
             g_usleep(10000);
         }
-        // Let delayed reposition timer fire & WM configure settle
-        pump_for(280);
-        if (sess_win->query_client_and_workarea_x11(cx, cy, wx, wy, ww, wh)) {
-            unfullscreen_pos_ok = (cx >= wx && cy >= wy);
+        // Let multi-pass reposition timer fire & WM configure settle
+        pump_for(500);
+        if (sess_win->query_client_and_workarea_x11(cx, cy, cw, ch, wx, wy, ww, wh)) {
+            unfullscreen_pos_ok =
+                (cx >= wx && cy >= wy && cw > 0 && ch > 0 &&
+                 std::abs((cx + cw / 2) - (wx + ww / 2)) <= 16 &&
+                 std::abs((cy + ch / 2) - (wy + wh / 2)) <= 16);
         }
     }
 
@@ -530,7 +533,7 @@ int Application::run_smoke_test() {
               << ", HiddenHotkey=" << (hidden_init_ok && hidden_hotkey_show_ok && hidden_hotkey_hide_ok)
               << ", PinnedHide=" << (pinned_hide_ok && pinned_hide_hotkey_ok && unpin_to_hidden_ok)
               << "): " << (bar_matrix_ok ? "OK" : "FAIL") << "\n";
-    std::cout << "Post-unfullscreen placement (client=" << cx << "," << cy
+    std::cout << "Post-unfullscreen placement (client=" << cx << "," << cy << " " << cw << "x" << ch
               << " workarea=" << wx << "," << wy << " " << ww << "x" << wh
               << "): " << (unfullscreen_pos_ok ? "OK" : "FAIL") << "\n";
     std::cout << "Windowed HeaderBar (visible=" << sess_win->is_header_bar_visible()

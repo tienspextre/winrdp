@@ -44,15 +44,15 @@ WinRDP được thiết kế để khắc phục các điểm khó chịu thư�
 Tải file `.deb` mới nhất tại trang **[GitHub Releases](https://github.com/tienspextre/winrdp/releases)** (đã đóng gói sẵn **FreeRDP 3.33.1** hỗ trợ **H.264/AVC444 + VA-API** riêng trong `/usr/lib/winrdp/lib/`, không xung đột với `libfreerdp` hệ thống):
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.5/winrdp_1.1.5_amd64.deb
+wget https://github.com/tienspextre/winrdp/releases/download/v1.1.6/winrdp_1.1.6_amd64.deb
 sudo apt update
-sudo apt install ./winrdp_1.1.5_amd64.deb
+sudo apt install ./winrdp_1.1.6_amd64.deb
 ```
 
 Kiểm tra toàn vẹn SHA-256 (tùy chọn):
 
 ```bash
-wget https://github.com/tienspextre/winrdp/releases/download/v1.1.5/SHA256SUMS.txt
+wget https://github.com/tienspextre/winrdp/releases/download/v1.1.6/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 ```
 
@@ -159,7 +159,7 @@ Khi vào Fullscreen, hành vi thanh **Connection Bar** phụ thuộc 2 nút **Pi
 
 ### 2. Chế độ Windowed (Cửa sổ có thanh tiêu đề)
 Nhấn `Ctrl+Alt+Enter` hoặc nút Restore trên Connection Bar để thoát sang chế độ cửa sổ:
-- Cửa sổ tự căn chỉnh nằm gọn trong vùng làm việc usable (*workarea*) bên dưới thanh top bar của Ubuntu để phần thanh tiêu đề gốc (`AdwHeaderBar`) luôn hiện đầy đủ và kéo di chuyển được.
+- Cửa sổ tự thu kích thước gọn và căn **chính giữa màn hình** trong vùng làm việc usable (*workarea*, cách đều dưới thanh panel trên cùng của Ubuntu — kể cả trên **X11 đơn/đa màn hình** lẫn **Wayland**) để phần thanh tiêu đề gốc (`AdwHeaderBar`) luôn thoáng và kéo di chuyển dễ dàng.
 - Phía trên thanh tiêu đề hiển thị độ phân giải/codec/FPS hiện tại cùng bộ nút nhanh (Capture bàn phím, `Ctrl+Alt+Del`, Smart Sizing, Multi-Monitor, vào lại Fullscreen).
 
 ### 3. Sử dụng Nhiều màn hình (Multi-Monitor)
